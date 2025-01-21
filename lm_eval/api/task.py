@@ -405,6 +405,8 @@ class Task(abc.ABC):
 
         cached_instances = load_from_cache(file_name=cache_key, cache=cache_requests)
 
+        # print("cached_instances", len(cached_instances), cached_instances[0])
+
         if cache_requests and cached_instances and not rewrite_requests_cache:
             cached_instances = cached_instances[:limit]
 
@@ -466,6 +468,11 @@ class Task(abc.ABC):
         # now flatten, this is to allow slicing to work with pickles
 
         sliced_instances = instances[:og_limit]
+
+        # print("sliced_instances", len(sliced_instances), len(sliced_instances[0]))
+        # print("sliced_instances[0][0]", sliced_instances[0][0])
+        # print("sliced_instances[0][1]", sliced_instances[0][1])
+        # print("sliced_instances[0][2]", sliced_instances[0][2])
 
         flattened_instances = [
             instance
@@ -1425,6 +1432,8 @@ class ConfigurableTask(Task):
         )
 
     def process_results(self, doc, results):
+        # print("self.config.process_results", self.config.process_results)
+        # print("self.OUTPUT_TYPE", self.OUTPUT_TYPE)
         if callable(self.config.process_results):
             return self.config.process_results(doc, results)
 

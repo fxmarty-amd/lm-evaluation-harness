@@ -367,7 +367,12 @@ class TemplateLM(LM):
         self, requests, disable_tqdm: bool = False
     ) -> List[Tuple[float, bool]]:
         new_reqs = []
-        for context, continuation in [req.args for req in requests]:
+
+        # print("ENCODING")
+        for context, continuation in tqdm([req.args for req in requests], desc="Encoding"):
+            # print("-------")
+            # print("context:", context)
+            # print("continuation:", continuation)
             if context == "":
                 # BOS or EOS as context
                 context_enc, continuation_enc = (

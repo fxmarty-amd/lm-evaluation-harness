@@ -465,6 +465,8 @@ def evaluate(
 
         limit = get_sample_size(task, limit_arg)
         limits.append(limit)
+
+        # print("limit", limit)
         task.build_all_requests(
             limit=limit,
             rank=lm.rank,
@@ -487,8 +489,11 @@ def evaluate(
         if write_out:
             print_writeout(task)
         # aggregate Instances by LM method requested to get output.
+
+        # print("task.instances", len(task.instances), task.instances[0])
         for instance in task.instances:
             reqtype = instance.request_type
+            # print("reqtype", reqtype)
             requests[reqtype].append(instance)
 
         if lm.world_size > 1:
@@ -520,6 +525,9 @@ def evaluate(
             for _ in range(padding_requests[reqtype]):
                 cloned_reqs.extend([req] * req.repeats)
 
+        # print("getattr(lm, reqtype)", getattr(lm, reqtype))
+        # print("cloned_reqs", len(cloned_reqs), cloned_reqs[0])
+
         # run requests through model
         resps = getattr(lm, reqtype)(cloned_reqs)
 
@@ -535,6 +543,7 @@ def evaluate(
     ### Postprocess outputs ###
     # TODO: del model here, maybe (idea: allow user to specify device of e.g. reward model separately)
     for task_output, limit in zip(eval_tasks, limits):
+        # print("------- task_output", task_output)
         task = task_output.task
         task.apply_filters()
 
@@ -550,16 +559,25 @@ def evaluate(
             instances.sort(key=lambda x: x.idx)
         # iterate over different filters used
         for filter_key in task.instances[0].filtered_resps.keys():
+            # print("---------- for filter_key in task.instances[0].filtered_resps.keys():")
+            # print("filter_key", filter_key)
             doc_iterator = task.doc_iterator(
                 rank=RANK, limit=limit, world_size=WORLD_SIZE
             )
             for doc_id, doc in doc_iterator:
+                # print("    ---------- doc_id, doc", doc_id, doc)
                 requests = instances_by_doc_id[doc_id]
+                # for req in requests:
+                    # print("    req.filtered_resps", req.filtered_resps)
+
+                # print("    task.process_results", task.process_results)
                 metrics = task.process_results(
                     doc, [req.filtered_resps[filter_key] for req in requests]
                 )
+                # print("    metrics", metrics)
                 if log_samples:
                     target = task.doc_to_target(doc)
+                    # print("    target", target)
                     example = {
                         "doc_id": doc_id,
                         "doc": doc,
@@ -586,6 +604,7 @@ def evaluate(
                     task_output.logged_samples.append(example)
                 for metric, value in metrics.items():
                     task_output.sample_metrics[(metric, filter_key)].append(value)
+                    # print("    task_output.sample_metrics[(metric, filter_key)]", task_output.sample_metrics[(metric, filter_key)])
 
     if WORLD_SIZE > 1:
         # if multigpu, then gather data across all ranks to rank 0

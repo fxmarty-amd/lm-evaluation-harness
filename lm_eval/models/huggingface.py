@@ -1088,7 +1088,10 @@ class HFLM(TemplateLM):
             disable=(disable_tqdm or (self.rank != 0)),
             desc="Running loglikelihood requests",
         )
+        # print("chunks", len(chunks), type(chunks), chunks[0])
+        # print("START PROCESSING CHUNKS")
         for chunk in chunks:
+            # print("----- processing chunk")
             inps = []
             cont_toks_list = []
             inplens = []
@@ -1103,6 +1106,7 @@ class HFLM(TemplateLM):
             # again because vectorizing is annoying
 
             for _, context_enc, continuation_enc in chunk:
+                # print("-------- processing part of chunk")
                 # sanity check
                 assert len(context_enc) > 0
                 assert len(continuation_enc) > 0
@@ -1116,6 +1120,10 @@ class HFLM(TemplateLM):
                 # cont_toks      4 5 6 7 8 9      [:, -len(continuation_enc):, :self.vocab_size] slice
 
                 # when too long to fit in context, truncate from the left
+
+                # print("self.backend", self.backend)
+                # print("len(continuation_enc)", len(continuation_enc))
+                # print("len(context_enc)", len(context_enc))
                 if self.backend == "causal":
                     total_length = len(context_enc) + len(continuation_enc)
                     if total_length > self.max_length + 1:
@@ -1164,6 +1172,7 @@ class HFLM(TemplateLM):
                     else inplen
                 )
 
+                # print("adding to inps", inp.shape)
                 inps.append(inp)  # [1, inp_length]
                 cont_toks_list.append(continuation_enc)
                 inplens.append(inplen)
@@ -1190,9 +1199,12 @@ class HFLM(TemplateLM):
                     "labels": batched_conts,
                 }
 
+            # print("batched_inps", batched_inps.shape)
             multi_logits = F.log_softmax(
                 self._model_call(batched_inps, **call_kwargs), dim=-1
             )  # [batch, padding_length (inp or cont), vocab]
+
+            # print("multi_logits", multi_logits.shape)
 
             for (request_str, ctx_tokens, _), logits, inplen, cont_toks in zip(
                 chunk, multi_logits, inplens, cont_toks_list
@@ -1228,6 +1240,7 @@ class HFLM(TemplateLM):
                     cont_toks = torch.tensor(
                         cont_toks, dtype=torch.long, device=self.device
                     ).unsqueeze(0)  # [1, seq]
+                    # print('cont_toks', cont_toks)
                     max_equal = (greedy_tokens == cont_toks).all()
 
                     # Obtain log-probs at the corresponding continuation token indices
@@ -1238,6 +1251,8 @@ class HFLM(TemplateLM):
 
                     # Answer: (log prob, is-exact-match)
                     answer = (float(logits.sum()), bool(max_equal))
+
+                    # print("answer", answer)
 
                     res.append(answer)
 
