@@ -1,3 +1,4 @@
+# this is me
 import copy
 import logging
 import os
@@ -849,6 +850,8 @@ class HFLM(TemplateLM):
             return_tensors="pt",
             **add_special_tokens,
         )
+        # print("left_truncate_len", left_truncate_len)
+        # print("truncation", truncation)
         if left_truncate_len:
             original_lengths = encoding["input_ids"].size(1)
             if original_lengths > left_truncate_len:
@@ -1131,6 +1134,9 @@ class HFLM(TemplateLM):
                 # model  \               \
                 # logits   1 2 3|4 5 6 7 8 9   <- the ctx half gets tossed out by the
                 # cont_toks      4 5 6 7 8 9      [:, -len(continuation_enc):, :self.vocab_size] slice
+                # print("self.backend", self.backend)
+                # print("total_length", len(context_enc) + len(continuation_enc))
+                # print("self.max_length + 1", self.max_length + 1)
 
                 # when too long to fit in context, truncate from the left
                 if self.backend == "causal":
@@ -1470,3 +1476,5 @@ class HFLM(TemplateLM):
         if self.delta:
             model_info["delta_sha"] = get_model_sha(self.delta, self.revision)
         return model_info
+
+# end!

@@ -405,6 +405,7 @@ class TemplateAPI(TemplateLM):
             seed=self._seed,
             **kwargs,
         )
+        # print("payload", payload)
         cache_method = "generate_until" if generate else "loglikelihood"
         try:
             async with session.post(
@@ -452,6 +453,11 @@ class TemplateAPI(TemplateLM):
             for cache_key, context_enc, continuation_enc in chunk:
                 # max_length - 1 as we always have 1 token for generation
                 inp = (context_enc + continuation_enc)[-self.max_length :]
+
+                # print("call batch_loglikelihood_requests:", len(inp))
+                # inp = inp[-self.max_length :]
+                # print("call batch_loglikelihood_requests after:", len(inp))
+
                 if len(inp) < len(context_enc + continuation_enc):
                     eval_logger.warning(
                         f"Context length ({len(context_enc)}) + continuation length ({len(continuation_enc)}) > max_length ({self.max_length}). Left truncating context."
@@ -521,15 +527,24 @@ class TemplateAPI(TemplateLM):
             # - any OOMs will happen right away rather than near the end
 
             toks = req[1] + req[2]
+            # print("len(toks)", len(toks))
             return -len(toks), tuple(toks)
+
+        # for request in requests:
+        #     print("requests here", type(request), len(request[1]), len(request[2]))
 
         re_ord = Collator(
             requests,
             sort_fn=_collate,
             group_by=None,
         )
+        # print("re_ord", re_ord)
+
         # if concurrent then we'll batch in the async context
         chunked = re_ord.get_batched(n=self._batch_size if self._concurrent <= 1 else 0)
+
+        # print("chunked", chunked)
+
         if self._concurrent <= 1:
             pbar = tqdm(desc="Requesting API", total=len(requests))
             for chunk in chunked:
@@ -607,6 +622,8 @@ class TemplateAPI(TemplateLM):
                     )
                     max_context_len = self.max_length - max_gen_toks
 
+                    # print("max_context_len here", max_context_len)
+
                     encodings_list = [x[-max_context_len:] for x in encodings_list]
 
                     if any(
@@ -656,6 +673,8 @@ class TemplateAPI(TemplateLM):
                     )
                     max_context_len = self.max_length - max_gen_toks
 
+                    # print("max_context_len here bis", max_context_len)
+
                     encodings_list = [x[-max_context_len:] for x in encodings_list]
 
                     if any(
@@ -686,14 +705,20 @@ class TemplateAPI(TemplateLM):
     def loglikelihood_rolling(
         self, requests: List[Instance], disable_tqdm: bool = False
     ) -> List[float]:
+        # print("call loglikelihood_rolling")
         loglikelihoods = []
 
         for (string,) in tqdm([req.args for req in requests], disable=disable_tqdm):
+            # print("call get_rolling_token_windows")
+            # print("string:", string)
+            tokens = self.tok_encode(string)
+            # print("len(tokens)", len(tokens))
+
             rolling_token_windows = list(
                 map(
                     utils.make_disjoint_window,
                     utils.get_rolling_token_windows(
-                        token_list=self.tok_encode(string),
+                        token_list=tokens,
                         prefix_token=self.prefix_token_id,
                         # max_seq_len - (1 for context)
                         max_seq_len=self.max_length - 1,
@@ -704,6 +729,9 @@ class TemplateAPI(TemplateLM):
 
             # TODO: Right now, we pass single EOT token to the Encoder and the full context to the decoder, in seq2seq case
             rolling_token_windows = [(None,) + x for x in rolling_token_windows]
+
+            # for rolling_token_window in rolling_token_windows:
+            #     print("type(rolling_token_window)", type(rolling_token_window))
 
             string_nll = self._loglikelihood_tokens(
                 rolling_token_windows,

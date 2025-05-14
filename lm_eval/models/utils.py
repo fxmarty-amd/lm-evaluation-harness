@@ -162,6 +162,7 @@ def pad_and_concat(
     )
 
     for i, tensor in enumerate(tensors):
+        # print("call pad_and_concat")
         if len(tensor.shape) == 2:
             tensor = tensor.squeeze(0)  # squeeze, in case passed [1, seq] size
         tensor_len = tensor.shape[0]
@@ -424,6 +425,7 @@ class Collator:
                 values,
             ) in self._arr_with_indices.items():  # type: ignore
                 values = self._reorder(values)
+                # print("batch = self.get_chunks")
                 batch = self.get_chunks(values, n=n, fn=batch_fn)
                 yield from batch
         elif self._group_by == "contexts":
