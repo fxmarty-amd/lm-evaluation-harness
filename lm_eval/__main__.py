@@ -358,6 +358,10 @@ def cli_evaluate(args: Union[argparse.Namespace, None] = None) -> None:
         else simple_parse_args_string(args.metadata)
     )
 
+    # TODO: this is just a hack.
+    if "pretrained" in metadata and not isinstance(metadata["pretrained"], str):
+        metadata.pop("pretrained")
+
     task_manager = TaskManager(include_path=args.include_path, metadata=metadata)
 
     if "push_samples_to_hub" in evaluation_tracker_args and not args.log_samples:
