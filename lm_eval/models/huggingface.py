@@ -258,6 +258,10 @@ class HFLM(TemplateLM):
             if enable_thinking is not None
             else {}
         )
+        self.enable_thinking = enable_thinking
+
+        if enable_thinking and think_end_token is None:
+            raise ValueError("think_end_token is required when using enable_thinking")
 
         self.add_bos_token = add_bos_token
 
@@ -988,12 +992,15 @@ class HFLM(TemplateLM):
         stopping_criteria = stop_sequences_criteria(
             self.tokenizer, stop, context.shape[1], context.shape[0]
         )
+
+        stopping_tokens = [multi_eos_criterias.sequence_ids for multi_eos_criterias in stopping_criteria]
+
         with torch.autocast(
             device_type=self.device.type,
             dtype=self.mixed_precision_dtype,
             enabled=self.mixed_precision_dtype is not None,
         ):
-            return self.model.generate(
+            res = self.model.generate(
                 input_ids=context,
                 max_length=max_length,
                 stopping_criteria=stopping_criteria,
@@ -1001,6 +1008,8 @@ class HFLM(TemplateLM):
                 use_cache=True,
                 **generation_kwargs,
             )
+
+            return res, stopping_tokens
 
     def _select_cont_toks(
         self,
@@ -1292,6 +1301,9 @@ class HFLM(TemplateLM):
                     "labels": batched_conts,
                 }
 
+            if self.enable_thinking:
+                raise ValueError("enable_thinking=True is not compatible with loglikelihood tasks. Please use generative tasks only.")
+
             multi_logits = F.log_softmax(
                 self._model_call(batched_inps, **call_kwargs),
                 dim=-1,
@@ -1459,13 +1471,24 @@ class HFLM(TemplateLM):
             if "max_length" not in kwargs:
                 kwargs["max_length"] = context_enc.shape[1] + max_gen_toks
 
+            # print("max_gen_toks here", max_gen_toks, "context_enc", context_enc.shape, "text:", self.tokenizer.batch_decode(context_enc), flush=True)
+            print("max_gen_toks here", max_gen_toks, "context_enc", context_enc.shape, flush=True)
+
             # perform batched generation
-            cont = self._model_generate(
+            cont, stopping_tokens = self._model_generate(
                 context=context_enc,
                 attention_mask=attn_masks,
                 stop=until,
                 **kwargs,
             )
+            print("generated text:", cont.shape, flush=True)
+            # print("generated text:", cont.shape, self.tokenizer.batch_decode(cont), flush=True)
+            
+            generated_length = cont.shape[-1] - context_enc.shape[-1]
+
+            if generated_length == max_gen_toks:
+                eval_logger.warning(f"Generated {generated_length} which is equal to `max_gen_toks`. The end performance may be low simply due to too short allowed generations.")
+                eval_logger.warning(f"Generated prompt + sequence: {self.tokenizer.batch_decode(cont)}")
 
             cont_toks_list = cont.tolist()
             for cont_toks, context in zip(cont_toks_list, contexts):
@@ -1480,10 +1503,21 @@ class HFLM(TemplateLM):
                         for i, token in enumerate(cont_toks)
                         if token == self.think_end_token
                     ]
+
+                    if len(think_token_indices) < 2:
+                        # TODO: does this really work????
+                        eval_logger.warning(f"The token think_end_token={self.think_end_token} was not found. max_gen_toks is likely too small for a thinking model. Got think_token_indices={think_token_indices}, generated cont_toks (decoded): `{repr(self.tokenizer.decode(cont_toks))}`.")
+
                     if think_token_indices:
                         cont_toks = cont_toks[think_token_indices[-1] + 1 :]
 
                 s = self.tok_decode(cont_toks)
+
+                for stop_sequence in until:
+                    stop_length = len(stop_sequence)
+
+                    if s[-stop_length:] == stop_sequence:
+                        eval_logger.warning(f"Sequence generation stopped due to the stop sequence: `{repr(stop_sequence)}`. This may or may not be expected.")
 
                 # Strip leading whitespace if we removed thinking tokens
                 if isinstance(self.think_end_token, int):
