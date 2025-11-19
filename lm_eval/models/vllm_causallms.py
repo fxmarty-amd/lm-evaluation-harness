@@ -669,13 +669,22 @@ class VLLM(TemplateLM):
                 sampling_params.append(
                     SamplingParams(max_tokens=max_gen_toks, stop=until, **kwargs)
                 )
+            # print("sampling_params here", sampling_params, "context_encoding_truncated", context_encoding_truncated.shape, flush=True)
 
+            print("sampling_params here", sampling_params, "context_encoding_truncated", len(context_encoding_truncated), "dim1", len(context_encoding_truncated[0]), flush=True)
             # perform batched generation
             cont = self._model_generate(
                 requests=context_encoding_truncated,
                 generate=True,
                 sampling_params=sampling_params,
             )
+            # print("generated text:", cont, flush=True)
+            # print("generated text:", cont.shape, self.tokenizer.batch_decode(cont), flush=True)
+            for output, context in zip(cont, context):
+                generated_text: str = output.outputs[0].text
+
+                print("generated_text", repr(generated_text), flush=True)
+                # print("generated_text", len(generated_text), flush=True)
 
             # cache generations
             for output, context in zip(cont, context):
@@ -684,6 +693,7 @@ class VLLM(TemplateLM):
                 generated_text = postprocess_generated_text(
                     generated_text, until, self.think_end_token
                 )
+                # print("postprocess_generated_text", repr(generated_text), flush=True)
                 res.append(generated_text)
                 self.cache_hook.add_partial(
                     "generate_until", (context, gen_kwargs), generated_text
