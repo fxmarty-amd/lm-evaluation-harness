@@ -634,8 +634,6 @@ class VLLM(TemplateLM):
         )
         # for each different set of kwargs, we execute all requests, by batch.
         eos = self.tokenizer.decode(self.eot_token_id)
-        print("max_gen_toks here", max_gen_toks)
-        print("gen_kwargs here", gen_kwargs)
         for chunk in chunks:
             context_and_encoding, all_gen_kwargs = zip(*chunk)
             context, context_encoding = zip(*context_and_encoding)
@@ -673,7 +671,13 @@ class VLLM(TemplateLM):
                 )
             # print("sampling_params here", sampling_params, "context_encoding_truncated", context_encoding_truncated.shape, flush=True)
 
-            print("context_encoding_truncated", len(context_encoding_truncated), "dim1", len(context_encoding_truncated[0]), flush=True)
+            print(
+                "context_encoding_truncated",
+                len(context_encoding_truncated),
+                "dim1",
+                len(context_encoding_truncated[0]),
+                flush=True,
+            )
 
             # for batch_item in context_encoding_truncated:
             #     print("batch_item:", repr(self.tokenizer.decode(batch_item)), flush=True)
@@ -695,13 +699,17 @@ class VLLM(TemplateLM):
                 generated_text: str = output.outputs[0].text
 
                 if "<|channel|>final<|message|>" not in generated_text:
-                    eval_logger.warning(f"Could not find an answer in the generated sequence: {repr(generated_text)}")
+                    eval_logger.warning(
+                        f"Could not find an answer in the generated sequence: {repr(generated_text)}"
+                    )
 
                 for stop_sequence in until:
                     stop_length = len(stop_sequence)
 
                     if generated_text[-stop_length:] == stop_sequence:
-                        eval_logger.warning(f"Sequence generation stopped due to the stop sequence: `{repr(stop_sequence)}`. This may or may not be expected.")
+                        eval_logger.warning(
+                            f"Sequence generation stopped due to the stop sequence: `{repr(stop_sequence)}`. This may or may not be expected."
+                        )
 
                 # use secondary stop seqs to cut off should-have-been-stopped content post-hoc
                 generated_text = postprocess_generated_text(
