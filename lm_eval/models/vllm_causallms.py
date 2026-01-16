@@ -698,7 +698,7 @@ class VLLM(TemplateLM):
             for output, context in zip(cont, context):
                 generated_text: str = output.outputs[0].text
 
-                if "<|channel|>final<|message|>" not in generated_text:
+                if self.think_end_token not in generated_text:
                     eval_logger.warning(
                         f"Could not find an answer in the generated sequence: {repr(generated_text)}"
                     )
