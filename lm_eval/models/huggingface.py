@@ -256,12 +256,19 @@ class HFLM(TemplateLM):
         self.vocab_size = self.tokenizer.vocab_size
         # select (or create) a pad token to use
         self.tokenizer = configure_pad_token(self.tokenizer, model_config=self.config)
-        self.chat_template_args = (
-            chat_template_args or {} | dict(enable_thinking=enable_thinking)
-            if enable_thinking is not None
-            else {}
-        )
+
+        if chat_template_args is not None:
+            self.chat_template_args = chat_template_args
+        else:
+            self.chat_template_args = (
+                chat_template_args or {} | dict(enable_thinking=enable_thinking)
+                if enable_thinking is not None
+                else {}
+            )
         self.enable_thinking = enable_thinking
+
+        print("self.chat_template_args", self.chat_template_args)
+        print("self.enable_thinking", self.enable_thinking)
 
         if enable_thinking and think_end_token is None:
             raise ValueError("think_end_token is required when using enable_thinking")
@@ -1311,6 +1318,16 @@ class HFLM(TemplateLM):
                 raise ValueError(
                     "enable_thinking=True is not compatible with loglikelihood tasks. Please use generative tasks only."
                 )
+            # print("\n###################################")
+            # print("inp:", self.tokenizer.batch_decode(batched_inps))
+
+            # from transformers import GenerationConfig
+            # gen_cfg = GenerationConfig(max_new_tokens=30, do_sample=False, temperature=0)
+            # gen_sequence = self.model.generate(batched_inps, generation_config=gen_cfg)
+
+            # print("gen_sequence", self.tokenizer.batch_decode(gen_sequence))
+
+            print("batched_inps", batched_inps.shape)
 
             multi_logits = F.log_softmax(
                 self._model_call(batched_inps, **call_kwargs),
