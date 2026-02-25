@@ -33,7 +33,6 @@ from lm_eval.utils import (
     make_disjoint_window,
 )
 
-
 try:
     import ray
     from vllm import LLM, SamplingParams, TokensPrompt
@@ -224,9 +223,13 @@ class VLLM(TemplateLM):
         )
         self.tokenizer = configure_pad_token(self.tokenizer, model_config=self._config)
         self.chat_template_args = chat_template_args or {}
+
+        print("self.chat_template_args", self.chat_template_args)
         self.enable_thinking = self.chat_template_args.pop(
             "enable_thinking", enable_thinking
         )
+
+        print("self.enable_thinking", self.enable_thinking)
 
         if parse_version(version("vllm")) >= parse_version("0.8.3"):
             kwargs_resolve_hf_chat_template = {
@@ -671,13 +674,13 @@ class VLLM(TemplateLM):
                 )
             # print("sampling_params here", sampling_params, "context_encoding_truncated", context_encoding_truncated.shape, flush=True)
 
-            print(
-                "context_encoding_truncated",
-                len(context_encoding_truncated),
-                "dim1",
-                len(context_encoding_truncated[0]),
-                flush=True,
-            )
+            # print(
+            #     "context_encoding_truncated",
+            #     len(context_encoding_truncated),
+            #     "dim1",
+            #     len(context_encoding_truncated[0]),
+            #     flush=True,
+            # )
 
             # for batch_item in context_encoding_truncated:
             #     print("batch_item:", repr(self.tokenizer.decode(batch_item)), flush=True)
@@ -768,7 +771,12 @@ class VLLM(TemplateLM):
                 inputs.append(inp)
                 ctxlens.append(ctxlen)
 
+            # for inp in inputs:
+            #     print("input:", self.tokenizer.decode(inp))
+
             outputs = self._model_generate(requests=inputs, generate=False)
+
+            # print("outputs", outputs)
 
             for output, ctxlen, (cache_key, _, _), inp in zip(
                 outputs, ctxlens, chunk, inputs
