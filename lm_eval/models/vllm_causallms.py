@@ -697,7 +697,7 @@ class VLLM(TemplateLM):
                     kwargs | {"until": until, "max_gen_toks": max_gen_toks}
                 )
 
-            # print("sampling_params here", sampling_params, "context_encoding_truncated", context_encoding_truncated.shape, flush=True)
+            # print("sampling_params here", sampling_params, flush=True)
 
             # print(
             #     "context_encoding_truncated",
@@ -717,16 +717,13 @@ class VLLM(TemplateLM):
                 sampling_params=sampling_params,
             )
 
-            # for output, context in zip(cont, context):
-            #     generated_text: str = output.outputs[0].text
-
-            #     print("generated_text", repr(generated_text), flush=True)
-
             # cache generations
             for output, _context, _gen_kwargs in zip(
                 cont, context, _cache_gen_kwargs, strict=True
             ):
                 generated_text: str = output.outputs[0].text
+
+                # print("generated_text", repr(generated_text), flush=True)
 
                 if self.think_end_token not in generated_text:
                     eval_logger.warning(
