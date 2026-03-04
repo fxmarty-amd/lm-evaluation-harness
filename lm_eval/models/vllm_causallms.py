@@ -725,7 +725,7 @@ class VLLM(TemplateLM):
 
                 # print("generated_text", repr(generated_text), flush=True)
 
-                if self.think_end_token not in generated_text:
+                if self.think_end_token is not None and self.think_end_token not in generated_text:
                     eval_logger.warning(
                         f"Could not find an answer in the generated sequence: {repr(generated_text)}"
                     )
