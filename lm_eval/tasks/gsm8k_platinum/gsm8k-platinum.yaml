@@ -26,8 +26,7 @@ generation_kwargs:
     - "Question:"
     - "</s>"
     - "<|im_end|>"
-  do_sample: false
-  temperature: 0.0
+  max_gen_toks: 8192
 repeats: 1
 num_fewshot: 5
 filter_list:

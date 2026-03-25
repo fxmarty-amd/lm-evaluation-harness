@@ -5,12 +5,13 @@ dataset_kwargs:
 
 output_type: generate_until
 
-doc_to_text: "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:"
+doc_to_text: "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nLet's think succinctly step by step and answer the question, finishing your answer with \"The answer is (X).\" where X is the correct letter choice. If you are unable to deduce succinctly an answer, give your best guess.\n"
+
 doc_to_target: "{{['A','B','C','D'][answer]}}"
 target_delimiter: ":"
 generation_kwargs:
-  until:
-    - "</s>"
+  max_gen_toks: 8192
+  until: []
 
 metric_list:
   - metric: exact_match
@@ -23,10 +24,9 @@ metric_list:
 filter_list:
   - name: default
     filter:
-      # This captures the first single capital letter A/B/C/D
-      - function: regex
-        regex_pattern: "([ABCD])"
-      - function: take_first
+      - function: "regex"
+        regex_pattern: 'answer is \(?([ABCD])\)?'
+      - function: "take_first"
 
 metadata:
   version: 4.0
