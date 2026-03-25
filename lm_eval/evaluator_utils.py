@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import pathlib
+import statistics
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,8 @@ class ResultAcc(TypedDict):
 
     task: Task
     raw_metrics: dict[tuple[str, str], list[Any]]
+    # raw_metrics_by_repeat[repeat_idx][(metric, filter_key)] = [per-doc values]
+    raw_metrics_by_repeat: list[dict[tuple[str, str], list[Any]]]
     logged_samples: list[Any]
 
 
@@ -174,6 +177,7 @@ def _compute_task_aggregations(
     task: Task,
     raw_metrics: dict[tuple[str, str], list],
     bootstrap_iters: int | None = 100000,
+    raw_metrics_by_repeat: list[dict[tuple[str, str], list[Any]]] | None = None,
 ) -> tuple[dict[str, Any], int]:
     """
     Compute aggregated metrics from raw per-sample metrics.
@@ -182,6 +186,8 @@ def _compute_task_aggregations(
         task: Task object (for aggregation functions)
         raw_metrics: {(metric_name, filter_key): [values]}
         bootstrap_iters: Number of bootstrap iterations for stderr
+        raw_metrics_by_repeat: list of per-repeat raw_metrics dicts; if provided
+            and length > 1, adds mean/median/min/max stats across repeats.
 
     Returns:
         (agg_metrics dict, sample_count)
@@ -215,6 +221,36 @@ def _compute_task_aggregations(
             )
         else:
             agg_metrics[f"{metric}_stderr,{filter_key}"] = "N/A"
+    
+    # print("raw_metrics_by_repeat", raw_metrics_by_repeat)
+    # Compute per-repeat aggregate scores and summarise across repeats
+    if raw_metrics_by_repeat and len(raw_metrics_by_repeat) > 1:
+        for (metric, filter_key) in raw_metrics.keys():
+            try:
+                agg_fn = task.aggregation()[metric]  # type: ignore[index]
+            except KeyError:
+                agg_fn = mean
+
+            per_repeat_scores = []
+            for repeat_metrics in raw_metrics_by_repeat:
+                repeat_items = repeat_metrics.get((metric, filter_key), [])
+                if repeat_items:
+                    per_repeat_scores.append(agg_fn(repeat_items))
+
+            # print("metric, filter_key", metric, filter_key)
+            # print("per_repeat_scores", per_repeat_scores)
+            if len(per_repeat_scores) > 1:
+                print(
+                    f"[repeats] {metric},{filter_key} repeat_0={per_repeat_scores[0]:.4f}  base={agg_metrics.get(f'{metric},{filter_key}', 'N/A')}",
+                    flush=True,
+                )
+                base_key = f"{metric},{filter_key}"
+                agg_metrics[f"{base_key}_mean_repeats"] = mean(per_repeat_scores)
+                agg_metrics[f"{base_key}_median_repeats"] = statistics.median(
+                    per_repeat_scores
+                )
+                agg_metrics[f"{base_key}_min_repeats"] = min(per_repeat_scores)
+                agg_metrics[f"{base_key}_max_repeats"] = max(per_repeat_scores)
 
     return agg_metrics, sample_len
 
@@ -245,7 +281,10 @@ def _collect_results(
         # Compute aggregated metrics
         # TODO: note: currently assume all metrics are scalar-valued
         agg_metrics, sample_len = _compute_task_aggregations(
-            task, acc["raw_metrics"], bootstrap_iters
+            task,
+            acc["raw_metrics"],
+            bootstrap_iters,
+            raw_metrics_by_repeat=acc.get("raw_metrics_by_repeat"),
         )
 
         # Get task config

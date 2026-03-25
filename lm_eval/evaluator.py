@@ -219,30 +219,32 @@ def simple_evaluate(
             "No tasks specified, or no tasks found. Please verify the task names."
         )
 
-    if gen_kwargs:
-        if isinstance(gen_kwargs, str):
-            gen_kwargs = simple_parse_args_string(gen_kwargs)
-        eval_logger.warning(
-            f"generation_kwargs: {gen_kwargs} specified through cli, these settings will update set parameters in yaml tasks. "
-            "Ensure 'do_sample=True' for non-greedy decoding!"
-        )
-        
-        if not gen_kwargs:
-            gen_kwargs = {}
+    if not gen_kwargs:
+        gen_kwargs = {}
 
-        model_args_dict = model_args
-        if isinstance(model_args_dict, str):
-            model_args_dict = simple_parse_args_string(model_args_dict)
+    if isinstance(gen_kwargs, str):
+        gen_kwargs = simple_parse_args_string(gen_kwargs)
+    eval_logger.warning(
+        f"generation_kwargs: {gen_kwargs} specified through cli, these settings will update set parameters in yaml tasks. "
+        "Ensure 'do_sample=True' for non-greedy decoding!"
+    )
+    
+    if not gen_kwargs:
+        gen_kwargs = {}
 
-        model_id = model_args_dict["pretrained"]
-        generation_config = GenerationConfig.from_pretrained(model_id)
-        
-        for key in ["top_p", "top_k", "temperature"]:
-            if key not in gen_kwargs:
-                eval_logger.info(f"Setting gen_kwargs {key}={getattr(generation_config, key)} from the model default generation_config.json.")
-                gen_kwargs[key] = getattr(generation_config, key)
-            else:
-                eval_logger.info(f"{model_name} default {key}={getattr(generation_config, key)} overriden by user set {key}={gen_kwargs[key]}")
+    model_args_dict = model_args
+    if isinstance(model_args_dict, str):
+        model_args_dict = simple_parse_args_string(model_args_dict)
+
+    model_id = model_args_dict["pretrained"]
+    generation_config = GenerationConfig.from_pretrained(model_id)
+    
+    for key in ["top_p", "top_k", "temperature"]:
+        if key not in gen_kwargs:
+            eval_logger.info(f"Setting gen_kwargs {key}={getattr(generation_config, key)} from the model default generation_config.json.")
+            gen_kwargs[key] = getattr(generation_config, key)
+        else:
+            eval_logger.info(f"{model_name} default {key}={getattr(generation_config, key)} overriden by user set {key}={gen_kwargs[key]}")
 
     if isinstance(model, str):
         if model_args is None:
@@ -322,6 +324,10 @@ def simple_evaluate(
             eval_logger.info(
                 f"{task_obj.config.task}: Using gen_kwargs: {task_obj.config.generation_kwargs}"
             )
+
+        eval_logger.info(
+            f"{task_name}: repeats={task_obj.get_config('repeats')}"
+        )
 
         if predict_only:
             eval_logger.info(
@@ -505,6 +511,7 @@ def evaluate(
         task_name: {
             "task": task_obj,
             "raw_metrics": defaultdict(list),
+            "raw_metrics_by_repeat": [],
             "logged_samples": [],
         }
         for task_name, task_obj in eval_tasks.items()
@@ -669,6 +676,33 @@ def evaluate(
                 for metric, value in metrics.items():
                     acc["raw_metrics"][(metric, filter_key)].append(value)
 
+                # Collect per-repeat metrics when repeats > 1.
+                # Each instance's resps list contains one entry per repeat.
+                n_repeats = requests[0].repeats if requests else 1
+                if n_repeats and n_repeats > 1:
+                    # Grow the per-repeat accumulator list to fit all repeats.
+                    while len(acc["raw_metrics_by_repeat"]) < n_repeats:
+                        acc["raw_metrics_by_repeat"].append(defaultdict(list))
+                    # Find the filter ensemble matching the current filter_key.
+                    filter_ensemble = next(
+                        (f for f in task._filters if f.name == filter_key), None
+                    )
+                    for repeat_idx in range(n_repeats):
+                        # Build per-repeat raw resps and apply the filter chain,
+                        # mirroring what apply_filters() does for the full resps.
+                        per_repeat_raw = [[req.resps[repeat_idx]] for req in requests]
+                        docs_list = [req.doc for req in requests]
+                        filtered = per_repeat_raw
+                        if filter_ensemble is not None:
+                            for f in filter_ensemble.filters:
+                                filtered = list(f().apply(filtered, docs_list))
+                        repeat_metrics = task.process_results(doc, filtered)
+                        for metric, value in repeat_metrics.items():
+                            acc["raw_metrics_by_repeat"][repeat_idx][
+                                (metric, filter_key)
+                            ].append(value)
+                # print("acc here", acc)
+
     if WORLD_SIZE > 1:
         # Gather all sample metrics across ranks, keyed by task name.
         if log_samples:
@@ -700,6 +734,24 @@ def evaluate(
                             for rank_data in all_metrics  # type: ignore
                         )
                     )
+
+        rank_metrics_by_repeat = {
+            task_name: [dict(r) for r in acc["raw_metrics_by_repeat"]]
+            for task_name, acc in eval_results_acc.items()
+        }
+        all_metrics_by_repeat = lm.gather_object(rank_metrics_by_repeat, dst=0)
+        if RANK == 0:
+            for task_name, acc in eval_results_acc.items():
+                merged: list[defaultdict] = []
+                for rank_data in all_metrics_by_repeat:  # type: ignore
+                    for repeat_idx, repeat_dict in enumerate(
+                        rank_data[task_name]
+                    ):
+                        while len(merged) <= repeat_idx:
+                            merged.append(defaultdict(list))
+                        for metric_key, values in repeat_dict.items():
+                            merged[repeat_idx][metric_key].extend(values)
+                acc["raw_metrics_by_repeat"] = merged
 
     if RANK == 0:
         res = _process_results(eval_results_acc, groups, bootstrap_iters)
