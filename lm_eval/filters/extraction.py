@@ -44,6 +44,9 @@ class RegexFilter(Filter):
             for resp in inst:
                 if not isinstance(resp, str):
                     resp = ""
+                if resp == "":
+                    filtered.append("[missing]")
+                    continue
                 match = self.regex.findall(resp)
                 if match:
                     match = match[self.group_select]
@@ -237,6 +240,9 @@ class MultiChoiceRegexFilter(RegexFilter):
 
             filtered = []
             for resp in r:
+                if isinstance(resp, str) and resp == "":
+                    filtered.append("[missing]")
+                    continue
                 match = find_match(self.regex, resp)
                 if not match:
                     match = find_match(

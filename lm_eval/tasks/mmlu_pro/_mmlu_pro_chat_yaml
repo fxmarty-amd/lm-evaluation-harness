@@ -16,7 +16,7 @@ filter_list:
       - function: "take_first"
 generation_kwargs:
   until: []
-  max_gen_toks: 4096
+  max_gen_toks: 8192
   do_sample: true
 num_fewshot: 5
 metric_list:
