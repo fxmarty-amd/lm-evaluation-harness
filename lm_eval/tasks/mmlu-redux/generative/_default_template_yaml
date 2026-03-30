@@ -25,8 +25,8 @@ filter_list:
   - name: default
     filter:
       - function: "regex"
-        regex_pattern: 'answer is \(?([ABCD])\)?'
-      - function: "take_first"
+        regex_pattern: 'answer is \*{0,2}\(?([ABCD])\)?\*{0,2}'
+      - function: "take_last"
 
 metadata:
   version: 4.0

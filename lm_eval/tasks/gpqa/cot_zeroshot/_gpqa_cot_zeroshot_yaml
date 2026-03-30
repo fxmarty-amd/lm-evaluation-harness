@@ -13,7 +13,7 @@ filter_list:
     filter:
       - function: "regex"
         regex_pattern: "(?<=The answer is )(.*)(?=.)"
-      - function: "take_first"
+      - function: "take_last"
   - name: "flexible-extract"
     filter:
       - function: "multi_choice_regex"
@@ -21,7 +21,7 @@ filter_list:
         ignore_case: true
         ignore_punctuation: true
         regex_pattern: "(\\([A-Z]\\))"
-      - function: "take_first"
+      - function: "take_last"
 generation_kwargs:
   until: []
   max_gen_toks: 16384
