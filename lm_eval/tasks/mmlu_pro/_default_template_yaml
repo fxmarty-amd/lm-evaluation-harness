@@ -13,8 +13,9 @@ filter_list:
     filter:
       - function: "regex"
         regex_pattern: 'answer is \*{0,2}\(?([ABCDEFGHIJ])\)?\*{0,2}'
+        group_select: -1
         # regex_pattern: r".*[aA]nswer:\s*([A-J])",
-      - function: "take_last"
+      - function: "take_first"
 generation_kwargs:
   until:
     - "Question:"

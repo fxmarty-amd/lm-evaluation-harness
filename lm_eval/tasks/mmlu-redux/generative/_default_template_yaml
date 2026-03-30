@@ -26,7 +26,8 @@ filter_list:
     filter:
       - function: "regex"
         regex_pattern: 'answer is \*{0,2}\(?([ABCD])\)?\*{0,2}'
-      - function: "take_last"
+        group_select: -1
+      - function: "take_first"
 
 metadata:
   version: 4.0
