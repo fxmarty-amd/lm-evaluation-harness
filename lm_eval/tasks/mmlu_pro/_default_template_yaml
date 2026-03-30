@@ -12,8 +12,7 @@ filter_list:
   - name: "custom-extract"
     filter:
       - function: "regex"
-        regex_pattern: 'answer is \*{0,2}\(?([ABCDEFGHIJ])\)?\*{0,2}'
-        group_select: -1
+        regex_pattern: 'answer is \(?([ABCDEFGHIJ])\)?'
         # regex_pattern: r".*[aA]nswer:\s*([A-J])",
       - function: "take_first"
 generation_kwargs:
