@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from functools import cached_property
@@ -5,7 +6,7 @@ from operator import itemgetter
 from typing import Any
 
 from lm_eval.api.registry import register_model
-from lm_eval.models.api_models import TemplateAPI
+from lm_eval.models.api_models import JsonChatStr, TemplateAPI
 from lm_eval.models.utils import handle_stop_sequences, postprocess_generated_text
 
 
@@ -21,6 +22,7 @@ class LocalCompletionsAPI(TemplateAPI):
         verify_certificate=True,
         ca_cert_path=None,
         auth_token=None,
+        think_end_token: str | None = None,
         **kwargs,
     ):
         # Auto-detect tokenizer backend
@@ -57,6 +59,7 @@ class LocalCompletionsAPI(TemplateAPI):
             auth_token=auth_token,
             **kwargs,
         )
+        self.think_end_token = think_end_token
 
     def _create_payload(
         self,
@@ -75,6 +78,10 @@ class LocalCompletionsAPI(TemplateAPI):
                 max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
             temperature = gen_kwargs.pop("temperature", 0)
             stop = handle_stop_sequences(gen_kwargs.pop("until", None), eos)
+            if self.think_end_token:
+                # Task stops may occur in the reasoning trace. Apply them to
+                # the answer after removing the trace instead.
+                stop = [sequence for sequence in stop if sequence == eos]
             return {
                 "prompt": messages,
                 "model": self.model,
@@ -123,15 +130,25 @@ class LocalCompletionsAPI(TemplateAPI):
                 res.append((logprobs, is_greedy))
         return res
 
-    @staticmethod
-    def parse_generations(outputs: dict | list[dict], **kwargs) -> list[str]:
+    def parse_generations(
+        self, outputs: dict | list[dict], stop: str | list[str] | None = None, **kwargs
+    ) -> list[str]:
         res = []
         if not isinstance(outputs, list):
             outputs = [outputs]
         for out in outputs:
             tmp = [None] * len(out["choices"])
             for choices in out["choices"]:
-                tmp[choices["index"]] = choices["text"]
+                text = choices["text"]
+                tmp[choices["index"]] = (
+                    postprocess_generated_text(
+                        text,
+                        stop=stop if self.think_end_token else None,
+                        think_end_token=self.think_end_token,
+                    )
+                    if text is not None
+                    else None
+                )
             res = res + tmp
         return res
 
@@ -175,6 +192,13 @@ class LocalChatCompletion(LocalCompletionsAPI):
                 "Chat completions does not support batching. Defaulting to batch size 1."
             )
             self._batch_size = 1
+
+    def apply_chat_template(
+        self, chat_history: list[dict[str, str]], add_generation_prompt: bool = True
+    ) -> JsonChatStr:
+        # Chat completions accepts messages directly, including when a tokenizer
+        # is loaded for other purposes.
+        return JsonChatStr(json.dumps(chat_history, ensure_ascii=False))
 
     def _create_payload(
         self,

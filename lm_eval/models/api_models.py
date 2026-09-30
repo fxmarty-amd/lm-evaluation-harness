@@ -335,7 +335,7 @@ class TemplateAPI(TemplateLM):
         self, chat_history: list[dict[str, str]], add_generation_prompt: bool = True
     ) -> str | JsonChatStr | list[dict]:
         """Applies a chat template to a list of chat history between user and model."""
-        if self.tokenizer_backend == "huggingface" and self.tokenized_requests:
+        if self.tokenizer_backend == "huggingface":
             return self.tokenizer.apply_chat_template(
                 chat_history,
                 tokenize=False,
@@ -501,6 +501,7 @@ class TemplateAPI(TemplateLM):
     ) -> list[str] | list[tuple[float, bool]] | None:
         # !!! Copy: shared dict for each request, need new object !!!
         gen_kwargs = copy.deepcopy(gen_kwargs)
+        task_stop = gen_kwargs.get("until") if gen_kwargs else None
         payload = self._create_payload(
             self.create_message(messages),
             generate=generate,
@@ -508,6 +509,19 @@ class TemplateAPI(TemplateLM):
             seed=self._seed,
             **kwargs,
         )
+        # prompt = payload.get("prompt", payload.get("messages"))
+        # eval_logger.debug(
+        #     "API request payload: url=%s, field=%s, value_type=%s, "
+        #     "item_count=%s, first_item_type=%s, first_item_preview=%.300r, "
+        #     "other_fields=%s",
+        #     self.base_url,
+        #     "prompt" if "prompt" in payload else "messages",
+        #     type(prompt).__name__,
+        #     len(prompt) if hasattr(prompt, "__len__") else None,
+        #     type(prompt[0]).__name__ if prompt else None,
+        #     prompt[0] if isinstance(prompt, list) and prompt else prompt,
+        #     {key: value for key, value in payload.items() if key not in ("prompt", "messages")},
+        # )
         cache_method = "generate_until" if generate else "loglikelihood"
         acquired = await sem.acquire()
         try:
@@ -528,6 +542,7 @@ class TemplateAPI(TemplateLM):
             tmp_answers = (
                 self.parse_generations(
                     outputs=outputs,
+                    stop=task_stop,
                 )
                 if generate
                 else self.parse_logprobs(
@@ -785,6 +800,7 @@ class TemplateAPI(TemplateLM):
                     self.parse_generations(
                         outputs=outputs,
                         contexts=contexts,
+                        stop=all_gen_kwargs[0].get("until"),
                     ),
                     contexts,
                     strict=False,
