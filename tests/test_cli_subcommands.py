@@ -161,6 +161,15 @@ class TestRunCommand:
         assert args.model == "hf"
         assert args.tasks == ["hellaswag", "arc_easy"]
 
+    def test_run_command_repeat_statistics_arguments(self):
+        parser = argparse.ArgumentParser()
+        Run.create(parser.add_subparsers())
+        args = parser.parse_args(
+            ["run", "--tasks", "gsm8k_platinum", "--repeats", "5", "--report_repeat_stats"]
+        )
+        assert args.repeats == 5
+        assert args.report_repeat_stats is True
+
     def test_run_command_tasks_comma_separated(self):
         """Test Run command with comma-separated tasks."""
         parser = argparse.ArgumentParser()

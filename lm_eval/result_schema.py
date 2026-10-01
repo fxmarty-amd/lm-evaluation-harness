@@ -105,6 +105,9 @@ EvalResults = TypedDict(
         # Per-task diagnostic counts and optional sample records.
         "diagnostic_stats": dict[str, Any],
         "diagnostic_samples": dict[str, Any],
+        # Per-repeat scores and samples for opted-in tasks. CLI prints tables at DEBUG.
+        "repeat_results": list[dict[str, Any]],
+        "repeat_samples": "dict[str, list[list[SampleResult]]]",
     },
     total=False,
 )

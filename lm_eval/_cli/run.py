@@ -1,9 +1,11 @@
 import argparse
+import copy
 import json
 import logging
 import os
 import textwrap
 from functools import partial
+from pathlib import Path
 
 from lm_eval._cli.subcommand import SubCommand
 from lm_eval._cli.utils import (
@@ -13,6 +15,71 @@ from lm_eval._cli.utils import (
     request_caching_arg_to_dict,
     try_parse_json,
 )
+
+
+def _save_diagnostic_samples(tracker, diagnostic_samples) -> None:
+    for task_name, task_samples in diagnostic_samples.items():
+        if task_samples["not_found"]:
+            tracker.save_results_samples(
+                task_name=f"not_found_{task_name}",
+                samples=task_samples["not_found"],
+            )
+        for filter_key, invalid_samples in task_samples["invalid"].items():
+            if invalid_samples:
+                tracker.save_results_samples(
+                    task_name=f"invalid_{task_name}_{filter_key}",
+                    samples=invalid_samples,
+                )
+
+
+def _save_repeat_runs(tracker, results, repeat_results, repeat_samples) -> None:
+    """Write each repeat using the ordinary evaluation layout under its own root."""
+    if not tracker.output_path or not repeat_results:
+        return
+
+    from lm_eval.loggers import EvaluationTracker
+
+    output_path = Path(tracker.output_path)
+    repeat_root = output_path.parent if output_path.suffix == ".json" else output_path
+    for repeat_idx, repeat_result in enumerate(repeat_results):
+        task_samples = {
+            task_name: samples[repeat_idx]
+            for task_name, samples in repeat_samples.items()
+            if repeat_idx < len(samples)
+        }
+        repeat_tracker = EvaluationTracker(
+            output_path=str(repeat_root / f"{tracker.date_id}_repeat{repeat_idx}")
+        )
+        repeat_tracker.general_config_tracker = copy.deepcopy(
+            tracker.general_config_tracker
+        )
+        repeat_output = dict(results)
+        repeat_output.update(repeat_result)
+        if "groups" not in repeat_result:
+            repeat_output.pop("groups", None)
+        repeat_tracker.save_results_aggregated(
+            results=repeat_output, samples=task_samples or None
+        )
+        for task_name, samples in task_samples.items():
+            repeat_tracker.save_results_samples(task_name=task_name, samples=samples)
+            task_stats = repeat_result.get("diagnostic_stats", {}).get(task_name, {})
+            first_filter = next(iter(task_stats.get("filter_total", {})), None)
+            not_found = [
+                sample
+                for sample in samples
+                if sample["filter"] == first_filter and sample["answer_not_found"]
+            ]
+            invalid_by_filter = {}
+            for filter_key in task_stats.get("filter_total", {}):
+                invalid_by_filter[filter_key] = [
+                    sample
+                    for sample in samples
+                    if sample["filter"] == filter_key and sample["invalid_filter"]
+                ]
+            _save_diagnostic_samples(
+                repeat_tracker,
+                {task_name: {"not_found": not_found, "invalid": invalid_by_filter}},
+            )
 
 
 class Run(SubCommand):
@@ -161,6 +228,19 @@ class Run(SubCommand):
                 'Generation arguments as `temperature=0,stop=["stop"]` or `key=val` `key2=val2`.'
                 "Values should be parsable with ast.literal_eval."
             ),
+        )
+        eval_group.add_argument(
+            "--repeats",
+            type=int,
+            default=None,
+            metavar="<n>",
+            help="Override the number of model responses per document for all tasks",
+        )
+        eval_group.add_argument(
+            "--report_repeat_stats",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="Report min, mean, median, and max scores across individual repeats",
         )
 
         # Data and Output
@@ -439,6 +519,8 @@ class Run(SubCommand):
             apply_chat_template=cfg.apply_chat_template,
             fewshot_as_multiturn=cfg.fewshot_as_multiturn,
             gen_kwargs=cfg.gen_kwargs,
+            repeats=cfg.repeats,
+            report_repeat_stats=cfg.report_repeat_stats,
             task_manager=task_manager,
             verbosity=cfg.verbosity,
             predict_only=cfg.predict_only,
@@ -455,6 +537,8 @@ class Run(SubCommand):
             if cfg.log_samples:
                 samples = results.pop("samples")
             diagnostic_samples = results.pop("diagnostic_samples", {})
+            repeat_results = results.pop("repeat_results", [])
+            repeat_samples = results.pop("repeat_samples", {})
 
             dumped = json.dumps(
                 results, indent=2, default=handle_non_serializable, ensure_ascii=False
@@ -495,18 +579,11 @@ class Run(SubCommand):
                         task_name=task_name, samples=samples[task_name]
                     )
 
-                for task_name, task_samples in diagnostic_samples.items():
-                    if task_samples["not_found"]:
-                        evaluation_tracker.save_results_samples(
-                            task_name=f"not_found_{task_name}",
-                            samples=task_samples["not_found"],
-                        )
-                    for filter_key, invalid_samples in task_samples["invalid"].items():
-                        if invalid_samples:
-                            evaluation_tracker.save_results_samples(
-                                task_name=f"invalid_{task_name}_{filter_key}",
-                                samples=invalid_samples,
-                            )
+                _save_diagnostic_samples(evaluation_tracker, diagnostic_samples)
+
+            _save_repeat_runs(
+                evaluation_tracker, results, repeat_results, repeat_samples
+            )
 
             if (
                 evaluation_tracker.push_results_to_hub
@@ -524,6 +601,13 @@ class Run(SubCommand):
             print(make_table(results))
             if "groups" in results:
                 print(make_table(results, "groups"))
+            if repeat_results and (
+                logging.getLogger("lm_eval").isEnabledFor(logging.DEBUG)
+                or os.environ.get("LMEVAL_LOG_LEVEL", "").upper() == "DEBUG"
+            ):
+                for repeat_idx, repeat_result in enumerate(repeat_results, start=1):
+                    print(f"Repeat {repeat_idx}/{len(repeat_results)}")
+                    print(make_table(repeat_result))
 
             if cfg.wandb_args:
                 wandb_logger.run.finish()
