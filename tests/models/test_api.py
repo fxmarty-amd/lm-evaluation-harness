@@ -59,6 +59,17 @@ def test_create_payload_generate(api):
     }
 
 
+def test_completion_token_limit_uses_server_usage(api):
+    response = {
+        "choices": [{"index": 0, "text": "The answer is 42."}],
+        "usage": {"completion_tokens": 5},
+    }
+
+    assert api.parse_generations(response, max_tokens=5) == ["The answer is 42."]
+    with pytest.raises(AssertionError, match="exceeding the requested max_tokens=4"):
+        api.parse_generations(response, max_tokens=4)
+
+
 def test_create_payload_loglikelihood(api):
     messages = ["The capital of France is"]
     payload = api._create_payload(messages, generate=False, gen_kwargs=None)

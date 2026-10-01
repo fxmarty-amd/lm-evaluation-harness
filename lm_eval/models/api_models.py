@@ -543,6 +543,7 @@ class TemplateAPI(TemplateLM):
                 self.parse_generations(
                     outputs=outputs,
                     stop=task_stop,
+                    max_tokens=payload.get("max_tokens"),
                 )
                 if generate
                 else self.parse_logprobs(
@@ -801,6 +802,10 @@ class TemplateAPI(TemplateLM):
                         outputs=outputs,
                         contexts=contexts,
                         stop=all_gen_kwargs[0].get("until"),
+                        max_tokens=all_gen_kwargs[0].get(
+                            "max_tokens",
+                            all_gen_kwargs[0].get("max_gen_toks", self._max_gen_toks),
+                        ),
                     ),
                     contexts,
                     strict=False,

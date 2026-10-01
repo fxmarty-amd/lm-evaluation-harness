@@ -13,6 +13,29 @@ from lm_eval.models.utils import handle_stop_sequences, postprocess_generated_te
 eval_logger = logging.getLogger(__name__)
 
 
+class CompletionText(str):
+    """Generated text with API completion metadata for sample logging."""
+
+    def __new__(
+        cls,
+        text: str,
+        answer_found: bool,
+        stop_reason: str | None = None,
+        full_resp: str | None = None,
+    ):
+        result = super().__new__(cls, text)
+        result.answer_found = answer_found
+        result.stop_reason = stop_reason
+        result.full_resp = full_resp if full_resp is not None else text
+        return result
+
+    def __reduce__(self):
+        return (
+            self.__class__,
+            (str(self), self.answer_found, self.stop_reason, self.full_resp),
+        )
+
+
 @register_model("local-completions")
 class LocalCompletionsAPI(TemplateAPI):
     def __init__(
@@ -77,11 +100,19 @@ class LocalCompletionsAPI(TemplateAPI):
             else:
                 max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
             temperature = gen_kwargs.pop("temperature", 0)
-            stop = handle_stop_sequences(gen_kwargs.pop("until", None), eos)
+            task_until = gen_kwargs.pop("until", None)
+            stop = handle_stop_sequences(task_until, eos)
             if self.think_end_token:
                 # Task stops may occur in the reasoning trace. Apply them to
                 # the answer after removing the trace instead.
                 stop = [sequence for sequence in stop if sequence == eos]
+            print(
+                "local-completions request stops:",
+                f"task_until={task_until!r}",
+                f"sent_stop={gen_kwargs.get('stop', stop)!r}",
+                f"think_end_token={self.think_end_token!r}",
+                flush=True,
+            )
             return {
                 "prompt": messages,
                 "model": self.model,
@@ -131,24 +162,90 @@ class LocalCompletionsAPI(TemplateAPI):
         return res
 
     def parse_generations(
-        self, outputs: dict | list[dict], stop: str | list[str] | None = None, **kwargs
+        self,
+        outputs: dict | list[dict],
+        stop: str | list[str] | None = None,
+        max_tokens: int | None = None,
+        **kwargs,
     ) -> list[str]:
         res = []
         if not isinstance(outputs, list):
             outputs = [outputs]
         for out in outputs:
+            completion_tokens = (out.get("usage") or {}).get("completion_tokens")
+            print("completion_tokens", completion_tokens, "max_tokens", max_tokens, flush=True)
+            if max_tokens is not None and completion_tokens is not None:
+                # OpenAI-compatible completion usage counts all choices in the
+                # response; each choice has its own max_tokens limit.
+                limit = max_tokens * len(out["choices"])
+                assert len(out["choices"]) == 1
+                assert completion_tokens <= limit, (
+                    f"Completion API generated {completion_tokens} tokens across "
+                    f"{len(out['choices'])} choices, exceeding the requested "
+                    f"max_tokens={max_tokens} per choice."
+                )
             tmp = [None] * len(out["choices"])
             for choices in out["choices"]:
                 text = choices["text"]
-                tmp[choices["index"]] = (
-                    postprocess_generated_text(
+                if text is not None:
+                    finish_reason = choices.get("finish_reason")
+                    api_stop_reason = choices.get("stop_reason")
+                    stop_sequences = [stop] if isinstance(stop, str) else (stop or [])
+                    matched_stop = next(
+                        (
+                            sequence
+                            for sequence in stop_sequences
+                            if sequence and text.endswith(sequence)
+                        ),
+                        None,
+                    )
+                    inferred_eos = (
+                        finish_reason == "stop"
+                        and api_stop_reason is None
+                        and matched_stop is None
+                        and self.eos_string is not None
+                    )
+                    if finish_reason == "length":
+                        stop_reason = "max_gen_toks"
+                    elif isinstance(api_stop_reason, str):
+                        stop_reason = f"stop_sequence:{api_stop_reason}"
+                    elif isinstance(api_stop_reason, int):
+                        stop_text = (
+                            self.tokenizer.decode([api_stop_reason])
+                            if self.tokenizer is not None
+                            else str(api_stop_reason)
+                        )
+                        stop_reason = f"stop_sequence:{stop_text}"
+                    elif matched_stop is not None:
+                        stop_reason = f"stop_sequence:{matched_stop}"
+                    elif inferred_eos:
+                        stop_reason = f"stop_sequence:{self.eos_string}"
+                    elif finish_reason == "stop":
+                        stop_reason = "natural"
+                    else:
+                        stop_reason = finish_reason
+                    print(
+                        "local-completions stop diagnostic:",
+                        f"finish_reason={finish_reason!r}",
+                        f"api_stop_reason={api_stop_reason!r}",
+                        f"task_until={stop_sequences!r}",
+                        f"matched_suffix={matched_stop!r}",
+                        f"inferred_eos={inferred_eos!r}",
+                        f"raw_suffix={text[-100:]!r}",
+                        f"chosen_stop_reason={stop_reason!r}",
+                        flush=True,
+                    )
+                    answer = postprocess_generated_text(
                         text,
                         stop=stop if self.think_end_token else None,
                         think_end_token=self.think_end_token,
                     )
-                    if text is not None
-                    else None
-                )
+                    tmp[choices["index"]] = CompletionText(
+                        answer,
+                        not self.think_end_token or self.think_end_token in text,
+                        stop_reason,
+                        text,
+                    )
             res = res + tmp
         return res
 

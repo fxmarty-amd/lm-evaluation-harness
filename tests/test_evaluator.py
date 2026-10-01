@@ -8,6 +8,9 @@ import pytest
 import lm_eval.api as api
 import lm_eval.evaluator as evaluator
 from lm_eval import tasks
+from lm_eval.api.instance import Instance
+from lm_eval.api.metrics import mean
+from lm_eval.models.openai_completions import LocalCompletionsAPI
 from lm_eval.utils import make_table
 
 
@@ -268,3 +271,102 @@ def test_make_table_regression_sorted_results_is_alphabetical(fake_pytablewriter
         ["Parent", "    N/A", "none", " ", "acc", "", "0.9000", "", ""],
         ["Standalone", "    N/A", "none", " ", "acc", "", "0.7000", "", ""],
     ]
+
+
+def test_local_completions_diagnostic_table():
+    class DiagnosticTask:
+        task_name = "diagnostic"
+        OUTPUT_TYPE = "generate_until"
+        VERSION = 3
+        eval_docs = [{"answer": "42"} for _ in range(3)]
+        _metric_fn_list = {"exact_match": None}
+
+        def __init__(self):
+            self.instances = [
+                Instance(
+                    request_type="generate_until",
+                    doc=doc,
+                    arguments=(f"Question {idx}", {}),
+                    idx=0,
+                    metadata=(self.task_name, idx, 1),
+                )
+                for idx, doc in enumerate(self.eval_docs)
+            ]
+
+        def build_all_requests(self, **kwargs):
+            pass
+
+        def apply_filters(self):
+            for instance in self.instances:
+                response = instance.resps[0]
+                instance.filtered_resps = {
+                    "strict-match": (
+                        "42" if "The answer is 42" in response else "[invalid]"
+                    ),
+                    "flexible-extract": "42" if "42" in response else "[invalid]",
+                }
+
+        def doc_iterator(self, **kwargs):
+            return enumerate(self.eval_docs)
+
+        def process_results(self, doc, responses):
+            return {"exact_match": float(responses[0] == doc["answer"])}
+
+        def doc_to_target(self, doc):
+            return doc["answer"]
+
+        def aggregation(self):
+            return {"exact_match": mean}
+
+        def higher_is_better(self):
+            return {"exact_match": True}
+
+        def dump_config(self):
+            return {"task": self.task_name, "num_fewshot": 0}
+
+    class DiagnosticLM:
+        rank = 0
+        world_size = 1
+
+        def generate_until(self, requests):
+            parser = LocalCompletionsAPI.__new__(LocalCompletionsAPI)
+            parser.think_end_token = "</mm:think>"
+            raw_texts = [
+                "<mm:think>work</mm:think>The answer is 42.",
+                "<mm:think>still working 42",
+                "<mm:think>work</mm:think>42",
+            ]
+            return [
+                parser.parse_generations(
+                    {"choices": [{"index": 0, "text": raw_texts[req.doc_id]}]}
+                )[0]
+                for req in requests
+            ]
+
+    result = evaluator.evaluate(
+        lm=DiagnosticLM(),
+        task_dict={"tasks": {"diagnostic": DiagnosticTask()}, "groups": {}},
+        bootstrap_iters=0,
+        log_samples=True,
+    )
+
+    stats = result["diagnostic_stats"]["diagnostic"]
+    assert stats["answer_not_found"] == 1
+    assert stats["invalid_filter"] == {
+        "strict-match": 1,
+        "flexible-extract": 0,
+    }
+    assert len(result["diagnostic_samples"]["diagnostic"]["not_found"]) == 1
+    assert len(result["diagnostic_samples"]["diagnostic"]["invalid"]["strict-match"]) == 1
+
+    table = make_table(result)
+    assert "answer-not-found|invalid-filter" in table
+    rows = [
+        [cell.strip() for cell in line.strip("|").split("|")]
+        for line in table.splitlines()[2:]
+    ]
+    ratios_by_filter = {row[2]: row[-2:] for row in rows}
+    assert ratios_by_filter == {
+        "strict-match": ["0.3333", "0.3333"],
+        "flexible-extract": ["0.3333", "0.0000"],
+    }

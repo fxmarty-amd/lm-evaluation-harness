@@ -597,11 +597,27 @@ def evaluate(
                 cloned_reqs.extend([req] * req.repeats)
 
         # run requests through model
-        resps = getattr(lm, reqtype)(cloned_reqs)
+        result = getattr(lm, reqtype)(cloned_reqs)
+        if reqtype == "generate_until" and isinstance(result, tuple):
+            resps, stop_reasons, found_answers, full_resps = result
+        else:
+            resps = result
+            stop_reasons = found_answers = full_resps = None
 
         # put responses from model into a list of length K for each request.
-        for x, req in zip(resps, cloned_reqs, strict=True):
+        for i, (x, req) in enumerate(zip(resps, cloned_reqs, strict=True)):
             req.resps.append(x)
+            for field, values, response_attr in (
+                ("stop_reasons", stop_reasons, "stop_reason"),
+                ("found_answers", found_answers, "answer_found"),
+                ("full_resps", full_resps, "full_resp"),
+            ):
+                if values is not None or hasattr(x, response_attr):
+                    if not hasattr(req, field):
+                        setattr(req, field, [])
+                    getattr(req, field).append(
+                        values[i] if values is not None else getattr(x, response_attr)
+                    )
 
         if lm.world_size > 1:
             lm.barrier()
@@ -610,9 +626,21 @@ def evaluate(
     WORLD_SIZE = lm.world_size
     ### Postprocess outputs ###
     # TODO: del model here, maybe (idea: allow user to specify device of e.g. reward model separately)
+    diagnostic_stats: dict[str, dict[str, Any]] = {}
+    diagnostic_samples: dict[str, dict[str, Any]] = {}
     for (task_name, acc), limit in zip(eval_results_acc.items(), limits, strict=True):
         task = acc["task"]
         task.apply_filters()
+
+        stats: dict[str, Any] = {
+            "version": task.VERSION,
+            "answer_not_found": 0,
+            "total": 0,
+            "invalid_filter": {},
+            "filter_total": {},
+        }
+        not_found_samples: list[dict] = []
+        invalid_samples: dict[str, list[dict]] = defaultdict(list)
 
         ### Collect values of metrics on all datapoints ###
         # # unpack results and sort back in order and return control to Task
@@ -625,7 +653,9 @@ def evaluate(
         for instances in instances_by_doc_id.values():
             instances.sort(key=lambda x: x.idx)
         # iterate over different filters used
-        for filter_key in task.instances[0].filtered_resps:
+        for filter_index, filter_key in enumerate(task.instances[0].filtered_resps):
+            stats["filter_total"][filter_key] = 0
+            stats["invalid_filter"][filter_key] = 0
             indices = samples.get(task_name, None) if samples is not None else None
             doc_iterator = task.doc_iterator(
                 rank=RANK,
@@ -639,6 +669,29 @@ def evaluate(
                 metrics = task.process_results(
                     doc, [req.filtered_resps[filter_key] for req in requests]
                 )
+                answer_not_found = any(
+                    response is None
+                    or response == ""
+                    or getattr(response, "answer_found", True) is False
+                    for req in requests
+                    if req.request_type == "generate_until"
+                    for response in req.resps
+                ) or any(
+                    not found
+                    for req in requests
+                    for found in getattr(req, "found_answers", [])
+                )
+                if filter_index == 0:
+                    stats["total"] += 1
+                    stats["answer_not_found"] += answer_not_found
+
+                stats["filter_total"][filter_key] += 1
+                invalid_filter = not answer_not_found and any(
+                    req.filtered_resps[filter_key] == "[invalid]"
+                    for req in requests
+                )
+                stats["invalid_filter"][filter_key] += invalid_filter
+
                 if log_samples:
                     target = task.doc_to_target(doc)
                     example = {
@@ -663,10 +716,39 @@ def evaluate(
                         "prompt_hash": hash_string(requests[0].arguments[0]),
                         "target_hash": hash_string(str(target)),
                     }
+                    if any(hasattr(req, "stop_reasons") for req in requests):
+                        example.update(
+                            stop_reasons=[
+                                getattr(req, "stop_reasons", []) for req in requests
+                            ],
+                            found_answers=[
+                                getattr(req, "found_answers", []) for req in requests
+                            ],
+                            full_resps=[
+                                getattr(req, "full_resps", []) for req in requests
+                            ],
+                        )
                     example.update(metrics)
                     acc["logged_samples"].append(example)
+                    if (filter_index == 0 and answer_not_found) or invalid_filter:
+                        diagnostic_example = {
+                            **example,
+                            "answer_not_found": answer_not_found,
+                            "invalid_filter": invalid_filter,
+                        }
+                        if filter_index == 0 and answer_not_found:
+                            not_found_samples.append(diagnostic_example)
+                        if invalid_filter:
+                            invalid_samples[filter_key].append(diagnostic_example)
                 for metric, value in metrics.items():
                     acc["raw_metrics"][(metric, filter_key)].append(value)
+
+        diagnostic_stats[task_name] = stats
+        if log_samples:
+            diagnostic_samples[task_name] = {
+                "not_found": not_found_samples,
+                "invalid": dict(invalid_samples),
+            }
 
     if WORLD_SIZE > 1:
         # Gather all sample metrics across ranks, keyed by task name.
@@ -700,6 +782,33 @@ def evaluate(
                         )
                     )
 
+        rank_diagnostics = {
+            "stats": diagnostic_stats,
+            "samples": diagnostic_samples,
+        }
+        all_diagnostics = lm.gather_object(rank_diagnostics, dst=0)
+        if RANK == 0:
+            for task_name in eval_results_acc:
+                stats = diagnostic_stats[task_name]
+                for rank_data in all_diagnostics[1:]:  # type: ignore[index]
+                    other = rank_data["stats"][task_name]
+                    stats["total"] += other["total"]
+                    stats["answer_not_found"] += other["answer_not_found"]
+                    for filter_key, count in other["filter_total"].items():
+                        stats["filter_total"][filter_key] += count
+                    for filter_key, count in other["invalid_filter"].items():
+                        stats["invalid_filter"][filter_key] += count
+                    if log_samples:
+                        diagnostic_samples[task_name]["not_found"].extend(
+                            rank_data["samples"][task_name]["not_found"]
+                        )
+                        for filter_key, examples in rank_data["samples"][task_name][
+                            "invalid"
+                        ].items():
+                            diagnostic_samples[task_name]["invalid"].setdefault(
+                                filter_key, []
+                            ).extend(examples)
+
     if RANK == 0:
         res = _process_results(eval_results_acc, groups, bootstrap_iters)
 
@@ -709,6 +818,10 @@ def evaluate(
             if LMEVAL_HASHMM and hasattr(lm, "MULTIMODAL"):
                 samples = hash_dict_images(samples)
 
-        return res._to_eval_results(samples=samples)
+        eval_results = res._to_eval_results(samples=samples)
+        eval_results["diagnostic_stats"] = diagnostic_stats
+        if log_samples:
+            eval_results["diagnostic_samples"] = diagnostic_samples
+        return eval_results
     else:
         return None
