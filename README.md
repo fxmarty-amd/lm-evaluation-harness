@@ -10,11 +10,10 @@ a separate PR; this branch is the combination, kept so our evals can use all of 
 | `answer-not-found` / `invalid-filter` diagnostic columns, with the offending samples dumped to `samples_not_found_*` / `samples_invalid_*` | https://github.com/EleutherAI/lm-evaluation-harness/pull/4475 (supersedes https://github.com/EleutherAI/lm-evaluation-harness/pull/3709) |
 | repeat statistics (`--repeats N`, `_min/_mean/_median/_max_repeats`, per-repeat result directories) and `maj@k` for the AIME tasks | https://github.com/EleutherAI/lm-evaluation-harness/pull/4474 |
 | `--generation-length`: token-length percentiles of the full generation (reasoning trace included) | https://github.com/EleutherAI/lm-evaluation-harness/pull/4477 |
-| `gsm8k_platinum` description (the 5-shot prompt carried no instruction) and version bump | https://github.com/EleutherAI/lm-evaluation-harness/pull/3411 |
-| `gpqa_diamond_generative_n_shot` prompt: expected final-answer format, few-shot answers rendered in that format, version bump | https://github.com/EleutherAI/lm-evaluation-harness/pull/3407 |
+| `gsm8k_platinum`: description (the 5-shot prompt carried no instruction), task-level stops cleared with `max_gen_toks: 8192` (they are checkpoint-specific and were overriding `--gen_kwargs`), version bump | https://github.com/EleutherAI/lm-evaluation-harness/pull/3411 |
+| `gpqa_*`: the generative prompt states the expected final-answer format with the few-shot answers rendered in that format, `cot_zeroshot` gets the same treatment plus `max_gen_toks: 16384`, `preprocess()` reduced to `text.strip()` in all five variants (the bracket-stripping regex corrupted bracketed mathematics), versions bumped | https://github.com/EleutherAI/lm-evaluation-harness/pull/3407 |
+| `mmlu_pro_chat`: MMLU-Pro with the few-shot examples rendered as separate user/assistant turns, for `--apply_chat_template --fewshot_as_multiturn` | https://github.com/EleutherAI/lm-evaluation-harness/pull/3568 |
 | `aime26` task (AIME 2026, `math-ai/aime26`), without the task-pinned stop sequences and greedy settings so `--gen_kwargs` can override them | https://github.com/EleutherAI/lm-evaluation-harness/pull/3603 |
-| `gpqa_*` variants other than the generative one: `cot_zeroshot` / `cot_n_shot` prompts state the expected final-answer format, `until`/`max_gen_toks` set per task, `preprocess()` reduced to `text.strip()` in all five variants, versions bumped to `2.3` | fork-only, no upstream PR yet |
-| `gsm8k_platinum` and `aime26`: `until` cleared and `max_gen_toks` set, since the task-level stops are checkpoint-specific and belong to the caller | fork-only, no upstream PR yet |
 
 Two behaviours worth knowing:
 
