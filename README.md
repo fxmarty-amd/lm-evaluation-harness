@@ -1,81 +1,37 @@
-Branched of upstream d6de81643928d653435c431bae19945d41d32520.
+# lm-evaluation-harness, AMD fork
 
-Contains the following fixes:
+`lm-evaluation-harness` with the fixes we need for evaluating reasoning models served through an
+OpenAI-compatible endpoint, up to date with upstream `main`. Each fix below is proposed upstream as
+a separate PR; this branch is the combination, kept so our evals can use all of them at once.
 
-## Summary of `answer-not-found`/`invalid-filter`
+| fix | upstream PR |
+| --- | --- |
+| `think_end_token`, stop reasons and sample metadata for the OpenAI-compatible backends (`local-completions`, `local-chat-completions`, `openai-*`) | https://github.com/EleutherAI/lm-evaluation-harness/pull/4473 |
+| `answer-not-found` / `invalid-filter` diagnostic columns, with the offending samples dumped to `samples_not_found_*` / `samples_invalid_*` | https://github.com/EleutherAI/lm-evaluation-harness/pull/4475 (supersedes https://github.com/EleutherAI/lm-evaluation-harness/pull/3709) |
+| repeat statistics (`--repeats N`, `_min/_mean/_median/_max_repeats`, per-repeat result directories) and `maj@k` for the AIME tasks | https://github.com/EleutherAI/lm-evaluation-harness/pull/4474 |
+| `--generation-length`: token-length percentiles of the full generation (reasoning trace included) | https://github.com/EleutherAI/lm-evaluation-harness/pull/4477 |
+| `gsm8k_platinum` description (the 5-shot prompt carried no instruction) and version bump | https://github.com/EleutherAI/lm-evaluation-harness/pull/3411 |
+| `gpqa_diamond_generative_n_shot` prompt: expected final-answer format, few-shot answers rendered in that format, version bump | https://github.com/EleutherAI/lm-evaluation-harness/pull/3407 |
 
-Displays:
+Two behaviours worth knowing:
 
-```
-|          Tasks          |Version|     Filter     |n-shot|  Metric   |   |Value|   |Stderr|answer-not-found|invalid-filter|
-|-------------------------|------:|----------------|-----:|-----------|---|----:|---|-----:|---------------:|-------------:|
-|gpqa_diamond_cot_zeroshot|    2.3|flexible-extract|     0|exact_match|↑  | 0.84|±  |0.0524|          0.0800|        0.0000|
-|                         |       |strict-match    |     0|exact_match|↑  | 0.82|±  |0.0549|          0.0800|        0.0000|
-```
+- the diagnostics, repeat reporting and `--generation-length` all rely on the per-generation metadata
+  (`answer_found`, `stop_reasons`, `full_resps`) that only the OpenAI-compatible clients log, so they
+  raise `NotImplementedError` on the native backends (`hf`, vLLM, SGLang) instead of reporting a
+  misleading zero;
+- `--repeats N` implies the per-repeat output: there is no separate flag.
 
-as well as details through `--log_samples --output_path ${DIRNAME}` logged json.
+## Quick example
 
-## Repeat support with min/max/median/mean
-
-Displays:
-
-```
-|    Tasks     |Version|     Filter     |n-shot|          Metric          |   |Value |   |Stderr|answer-not-found|invalid-filter|
-|--------------|------:|----------------|-----:|--------------------------|---|-----:|---|-----:|---------------:|-------------:|
-|gsm8k_platinum|      3|flexible-extract|     5|exact_match               |↑  |0.9636|±  |0.0054|          0.0025|        0.0000|
-|              |       |strict-match    |     5|exact_match               |↑  |0.9239|±  |0.0076|          0.0025|        0.0488|
-|              |       |flexible-extract|     5|exact_match_max_repeats   |↑  |0.9686|   |      |          0.0025|        0.0000|
-|              |       |strict-match    |     5|exact_match_max_repeats   |↑  |0.9239|   |      |          0.0025|        0.0488|
-|              |       |flexible-extract|     5|exact_match_mean_repeats  |↑  |0.9649|   |      |          0.0025|        0.0000|
-|              |       |strict-match    |     5|exact_match_mean_repeats  |↑  |0.9153|   |      |          0.0025|        0.0488|
-|              |       |flexible-extract|     5|exact_match_median_repeats|↑  |0.9653|   |      |          0.0025|        0.0000|
-|              |       |strict-match    |     5|exact_match_median_repeats|↑  |0.9107|   |      |          0.0025|        0.0488|
-|              |       |flexible-extract|     5|exact_match_min_repeats   |↑  |0.9620|   |      |          0.0025|        0.0000|
-|              |       |strict-match    |     5|exact_match_min_repeats   |↑  |0.9098|   |      |          0.0025|        0.0488|
-
-Repeat 1/5
-|    Tasks     |Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|answer-not-found|invalid-filter|
-|--------------|------:|----------------|-----:|-----------|---|-----:|---|-----:|---------------:|-------------:|
-|gsm8k_platinum|      3|flexible-extract|     5|exact_match|↑  |0.9636|±  |0.0054|          0.0017|        0.0000|
-|              |       |strict-match    |     5|exact_match|↑  |0.9239|±  |0.0076|          0.0017|        0.0488|
-
-Repeat 2/5
-|    Tasks     |Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|answer-not-found|invalid-filter|
-|--------------|------:|----------------|-----:|-----------|---|-----:|---|-----:|---------------:|-------------:|
-|gsm8k_platinum|      3|flexible-extract|     5|exact_match|↑  |0.9653|±  |0.0053|          0.0008|        0.0000|
-|              |       |strict-match    |     5|exact_match|↑  |0.9098|±  |0.0082|          0.0008|        0.0637|
-
-Repeat 3/5
-|    Tasks     |Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|answer-not-found|invalid-filter|
-|--------------|------:|----------------|-----:|-----------|---|-----:|---|-----:|---------------:|-------------:|
-|gsm8k_platinum|      3|flexible-extract|     5|exact_match|↑  |0.9686|±  |0.0050|          0.0008|        0.0000|
-|              |       |strict-match    |     5|exact_match|↑  |0.9222|±  |0.0077|          0.0008|        0.0562|
-
-Repeat 4/5
-|    Tasks     |Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|answer-not-found|invalid-filter|
-|--------------|------:|----------------|-----:|-----------|---|-----:|---|-----:|---------------:|-------------:|
-|gsm8k_platinum|      3|flexible-extract|     5|exact_match|↑  |0.9620|±  |0.0055|          0.0000|        0.0000|
-|              |       |strict-match    |     5|exact_match|↑  |0.9098|±  |0.0082|          0.0000|        0.0678|
-
-Repeat 5/5
-|    Tasks     |Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|answer-not-found|invalid-filter|
-|--------------|------:|----------------|-----:|-----------|---|-----:|---|-----:|---------------:|-------------:|
-|gsm8k_platinum|      3|flexible-extract|     5|exact_match|↑  |0.9653|±  |0.0053|          0.0000|        0.0000|
-|              |       |strict-match    |     5|exact_match|↑  |0.9107|±  |0.0082|          0.0000|        0.0662|
+```bash
+lm_eval --model local-chat-completions \
+    --model_args "model=<served-name>,base_url=http://127.0.0.1:8000/v1/chat/completions,tokenizer=<tokenizer-path>,tokenizer_backend=huggingface,think_end_token=</think>" \
+    --tasks gsm8k_platinum --apply_chat_template \
+    --gen_kwargs "max_gen_toks=8192" \
+    --repeats 5 --generation-length --log_samples \
+    --output_path results/gsm8k_repeats
 ```
 
-with the repeat batched in the same eval run.
-
-Log files through `--log_samples --output_path ${DIRNAME}` are separated for each repeat
-
-## `think_end_token` support in `--model local-completions`
-
-Self-explanatory
-
-## Chat tempate fix in `local-completions`
-
-Correctly apply chat tempate.
-
-## Task definition fixes
-
-Fix bugs in task definitions.
+which prints the results table with the two diagnostic columns, the `_repeats` variants, and a
+`Generation length:` table (`n`, `p25`, `mean`, `median`, `p75`, `p90`), and writes each repeat under
+`results/gsm8k_repeats/<task>_<timestamp>_repeat<N>/`.
