@@ -120,6 +120,15 @@ class Run(SubCommand):
         # Evaluation Settings
         eval_group = self._parser.add_argument_group("evaluation settings")
         eval_group.add_argument(
+            "--generation-length",
+            action="store_true",
+            help=(
+                "Report generation length statistics (in tokens) for generate_until "
+                "tasks. Requires --model local-completions / local-chat-completions "
+                "with a tokenizer in --model_args."
+            ),
+        )
+        eval_group.add_argument(
             "--num_fewshot",
             "-f",
             type=int,
@@ -430,6 +439,7 @@ class Run(SubCommand):
                 "delete_requests_cache", False
             ),
             limit=cfg.limit,
+            generation_length=cfg.generation_length,
             samples=cfg.samples,
             check_integrity=cfg.check_integrity,
             write_out=cfg.write_out,
