@@ -374,6 +374,7 @@ def simple_evaluate(
         system_instruction=system_instruction,
         apply_chat_template=apply_chat_template,
         fewshot_as_multiturn=fewshot_as_multiturn,
+        generation_length=generation_length,
         verbosity=verbosity,
         confirm_run_unsafe_code=confirm_run_unsafe_code,
     )
@@ -454,8 +455,7 @@ def _iter_generations(sample: dict):
         if all(isinstance(item, str) for item in values):
             yield from values
         elif all(
-            isinstance(group, list)
-            and all(isinstance(item, str) for item in group)
+            isinstance(group, list) and all(isinstance(item, str) for item in group)
             for group in values
         ):
             for group in values:
@@ -467,36 +467,75 @@ def _iter_generations(sample: dict):
         return
 
 
-def _generation_length_stats(lm, samples) -> dict[str, dict[str, float]]:
+def _generation_length_stats(
+    lm, eval_results_acc
+) -> dict[str, dict[str, float | None]]:
     """Token length statistics of the generated text, per task.
+
+    Tasks that do not generate (`loglikelihood` / multiple-choice) get a row with
+    `count: 0` so the table can render them as "N/A" instead of hiding them.
 
     Restricted to the OpenAI-compatible clients: they return the generation per
     sample and carry the tokenizer used to count it. Any other backend, or a
-    client without a tokenizer, is an error rather than a silently wrong number.
+    client without a local tokenizer, is an error rather than a wrong number.
     """
     from lm_eval.models.openai_completions import LocalCompletionsAPI
 
     if not isinstance(lm, LocalCompletionsAPI):
-        raise ValueError(
-            "--generation-length requires an OpenAI-compatible model backend "
-            f"(local-completions, local-chat-completions, openai-*); got {type(lm).__name__}"
+        # Not a usage error: the native backends do not log the untrimmed
+        # generation yet, so there is nothing to measure for them.
+        raise NotImplementedError(
+            "--generation-length is not implemented for "
+            f"{type(lm).__name__}: only the OpenAI-compatible clients "
+            "(local-completions, local-chat-completions, openai-*) log the "
+            "untrimmed generation (full_resps) it measures"
         )
     if getattr(lm, "tokenizer", None) is None:
         raise ValueError(
-            "--generation-length requires a tokenizer: pass tokenizer=<path-or-hub-id> "
-            "in --model_args"
+            "--generation-length requires a local tokenizer: pass "
+            "tokenizer=<path-or-hub-id> and tokenizer_backend=huggingface in "
+            f"--model_args (backend is {getattr(lm, 'tokenizer_backend', None)!r})"
         )
-    if not samples:
+    if not eval_results_acc:
         raise ValueError("--generation-length requires --log_samples")
 
-    stats: dict[str, dict[str, float]] = {}
-    for task_name, task_samples in samples.items():
+    stats: dict[str, dict[str, float | None]] = {}
+    for task_name, acc in eval_results_acc.items():
+        empty = {
+            "count": 0,
+            "mean": None,
+            "p25": None,
+            "median": None,
+            "p75": None,
+            "p90": None,
+        }
+        if getattr(acc.get("task"), "OUTPUT_TYPE", None) != "generate_until":
+            stats[task_name] = dict(empty)
+            continue
+
+        task_samples = acc.get("logged_samples") or []
+        # The sample log holds one record per filter for the same generation;
+        # keep the first record per document so nothing is counted twice.
+        seen_docs: set = set()
+        deduped = []
+        for sample in task_samples:
+            doc_key = sample.get("doc_id", id(sample))
+            if doc_key in seen_docs:
+                continue
+            seen_docs.add(doc_key)
+            deduped.append(sample)
+
         lengths = [
-            len(lm.tokenizer.encode(response, add_special_tokens=False, truncation=False))
-            for sample in task_samples
+            len(
+                lm.tokenizer.encode(
+                    response, add_special_tokens=False, truncation=False
+                )
+            )
+            for sample in deduped
             for response in _iter_generations(sample)
         ]
         if not lengths:
+            stats[task_name] = dict(empty)
             continue
         ordered = sorted(lengths)
         stats[task_name] = {
@@ -536,6 +575,7 @@ def evaluate(
     fewshot_as_multiturn: bool = False,
     verbosity: str = "INFO",
     confirm_run_unsafe_code: bool = False,
+    generation_length: bool = False,
 ) -> EvalResults | None:
     """Instantiate and evaluate a model on a list of tasks.
 
@@ -819,7 +859,7 @@ def evaluate(
         eval_results = res._to_eval_results(samples=samples)
         if generation_length:
             eval_results["generation_length_stats"] = _generation_length_stats(
-                lm, samples
+                lm, eval_results_acc
             )
         return eval_results
     else:

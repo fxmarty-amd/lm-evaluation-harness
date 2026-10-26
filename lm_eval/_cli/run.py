@@ -390,7 +390,11 @@ class Run(SubCommand):
 
         from lm_eval import simple_evaluate
         from lm_eval.loggers import EvaluationTracker, TrackioLogger, WandbLogger
-        from lm_eval.utils import handle_non_serializable, make_table
+        from lm_eval.utils import (
+            handle_non_serializable,
+            make_generation_length_table,
+            make_table,
+        )
 
         # Set up logging
         if cfg.wandb_args:
@@ -520,6 +524,9 @@ class Run(SubCommand):
             print(make_table(results))
             if "groups" in results:
                 print(make_table(results, "groups"))
+            if results.get("generation_length_stats"):
+                print("\nGeneration length:")
+                print(make_generation_length_table(results["generation_length_stats"]))
 
             if cfg.wandb_args:
                 wandb_logger.run.finish()
