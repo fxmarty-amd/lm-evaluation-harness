@@ -320,9 +320,15 @@ def test_local_completions_diagnostic_table():
         def dump_config(self):
             return {"task": self.task_name, "num_fewshot": 0}
 
-    class DiagnosticLM:
+    class DiagnosticLM(LocalCompletionsAPI):
+        # the diagnostics are only computed for the OpenAI-compatible clients, so
+        # the fake model has to be one; skip TemplateAPI.__init__ (no endpoint)
         rank = 0
         world_size = 1
+
+        def __init__(self):
+            self.tokenizer = None
+            self.think_end_token = None
 
         def generate_until(self, requests):
             parser = LocalCompletionsAPI.__new__(LocalCompletionsAPI)

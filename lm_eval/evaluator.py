@@ -431,6 +431,23 @@ _TRUNCATION_STOP_REASONS = {"max_gen_toks", "length"}
 
 
 @positional_deprecated
+def _require_api_backend(lm, feature: str) -> None:
+    """Fail clearly when a feature needs metadata only the API clients provide.
+
+    The diagnostics count missing answers from `answer_found` / `stop_reasons`,
+    which the OpenAI-compatible clients attach to every generation; the native
+    backends (hf, vLLM, SGLang) do not, so they would silently report zero.
+    """
+    from lm_eval.models.openai_completions import LocalCompletionsAPI
+
+    if not isinstance(lm, LocalCompletionsAPI):
+        raise NotImplementedError(
+            f"{feature} is only supported for OpenAI-compatible model backends "
+            "(local-completions, local-chat-completions, openai-*); "
+            f"{type(lm).__name__} does not report per-generation stop reasons"
+        )
+
+
 def _answer_not_found(requests) -> bool:
     """Check whether any request for a document produced no answer.
 
@@ -651,6 +668,11 @@ def evaluate(
 
     RANK = lm.rank
     WORLD_SIZE = lm.world_size
+    if any(
+        getattr(acc["task"], "OUTPUT_TYPE", None) == "generate_until"
+        for acc in eval_results_acc.values()
+    ):
+        _require_api_backend(lm, "the answer-not-found / invalid-filter diagnostics")
     ### Postprocess outputs ###
     # TODO: del model here, maybe (idea: allow user to specify device of e.g. reward model separately)
     diagnostic_stats: dict[str, dict[str, Any]] = {}
