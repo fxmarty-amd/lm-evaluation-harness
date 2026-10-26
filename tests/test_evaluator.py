@@ -172,7 +172,12 @@ class _FakeMarkdownTableWriter:
     def __init__(self):
         self.headers = []
         self.value_matrix = []
+        self.type_hints = []
+        self.styles = {}
         type(self).instances.append(self)
+
+    def set_style(self, column: int, style) -> None:
+        self.styles[column] = style
 
     def dumps(self):
         return repr(self.value_matrix)
@@ -186,14 +191,26 @@ class _FakeLatexTableWriter(_FakeMarkdownTableWriter):
 def fake_pytablewriter(monkeypatch):
     _FakeMarkdownTableWriter.instances.clear()
     _FakeLatexTableWriter.instances.clear()
-    monkeypatch.setitem(
-        sys.modules,
-        "pytablewriter",
-        types.SimpleNamespace(
-            MarkdownTableWriter=_FakeMarkdownTableWriter,
-            LatexTableWriter=_FakeLatexTableWriter,
-        ),
-    )
+    # the table writer is faked, so its submodules have to be faked too:
+    # make_table imports `pytablewriter.style.Style` and `typepy.String` to
+    # right-align the diagnostic columns
+    fake_pytablewriter = types.ModuleType("pytablewriter")
+    fake_pytablewriter.MarkdownTableWriter = _FakeMarkdownTableWriter
+    fake_pytablewriter.LatexTableWriter = _FakeLatexTableWriter
+    fake_style = types.ModuleType("pytablewriter.style")
+
+    class _FakeStyle:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_style.Style = _FakeStyle
+    fake_pytablewriter.style = fake_style
+    fake_typepy = types.ModuleType("typepy")
+    fake_typepy.String = str
+
+    monkeypatch.setitem(sys.modules, "pytablewriter", fake_pytablewriter)
+    monkeypatch.setitem(sys.modules, "pytablewriter.style", fake_style)
+    monkeypatch.setitem(sys.modules, "typepy", fake_typepy)
 
 
 def test_make_table_regression_preserves_hierarchy_and_metadata(fake_pytablewriter):
@@ -231,9 +248,21 @@ def test_make_table_regression_preserves_hierarchy_and_metadata(fake_pytablewrit
 
     assert output == repr(
         [
-            ["Parent", 1, "none", "5", "acc", "↑", "0.9000", "±", "0.0100"],
-            [" - Child", 2, "none", "0", "acc", "↑", "0.8000", "", ""],
-            ["Standalone", 3, "none", "2", "loss", "↓", "0.2000", "", ""],
+            [
+                "Parent",
+                1,
+                "none",
+                "5",
+                "acc",
+                "↑",
+                "0.9000",
+                "±",
+                "0.0100",
+                "N/A",
+                "N/A",
+            ],
+            [" - Child", 2, "none", "0", "acc", "↑", "0.8000", "", "", "N/A", "N/A"],
+            ["Standalone", 3, "none", "2", "loss", "↓", "0.2000", "", "", "N/A", "N/A"],
         ]
     )
     assert _FakeMarkdownTableWriter.instances[0].headers == [
@@ -246,6 +275,8 @@ def test_make_table_regression_preserves_hierarchy_and_metadata(fake_pytablewrit
         "Value",
         "",
         "Stderr",
+        "answer-not-found",
+        "invalid-filter",
     ]
 
 
@@ -263,9 +294,21 @@ def test_make_table_regression_sorted_results_is_alphabetical(fake_pytablewriter
     make_table(result_dict, sort_results=True)
 
     assert _FakeMarkdownTableWriter.instances[0].value_matrix == [
-        [" - Child", "    N/A", "none", " ", "acc", "", "0.8000", "", ""],
-        ["Parent", "    N/A", "none", " ", "acc", "", "0.9000", "", ""],
-        ["Standalone", "    N/A", "none", " ", "acc", "", "0.7000", "", ""],
+        [" - Child", "    N/A", "none", " ", "acc", "", "0.8000", "", "", "N/A", "N/A"],
+        ["Parent", "    N/A", "none", " ", "acc", "", "0.9000", "", "", "N/A", "N/A"],
+        [
+            "Standalone",
+            "    N/A",
+            "none",
+            " ",
+            "acc",
+            "",
+            "0.7000",
+            "",
+            "",
+            "N/A",
+            "N/A",
+        ],
     ]
 
 
