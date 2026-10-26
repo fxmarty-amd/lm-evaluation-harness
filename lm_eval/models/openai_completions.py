@@ -161,6 +161,64 @@ class LocalCompletionsAPI(TemplateAPI):
                 res.append((logprobs, is_greedy))
         return res
 
+    def _to_completion_text(
+        self,
+        text: str,
+        choice: dict,
+        stop: str | list[str] | None = None,
+    ) -> CompletionText:
+        """Attach the metadata that ends up in `samples_*.jsonl`.
+
+        Shared by the completions and chat clients so both log the same
+        `stop_reasons` / `found_answers` / `full_resps` fields. `text` is the raw
+        generation, thinking content included; the returned string is the answer
+        after stop-sequence and thinking-trace post-processing, while `full_resp`
+        keeps the untrimmed generation.
+        """
+        finish_reason = choice.get("finish_reason")
+        api_stop_reason = choice.get("stop_reason")
+        stop_sequences = [stop] if isinstance(stop, str) else (stop or [])
+        matched_stop = next(
+            (sequence for sequence in stop_sequences if sequence and text.endswith(sequence)),
+            None,
+        )
+        inferred_eos = (
+            finish_reason == "stop"
+            and api_stop_reason is None
+            and matched_stop is None
+            and self.eos_string is not None
+        )
+        if finish_reason == "length":
+            stop_reason = "max_gen_toks"
+        elif isinstance(api_stop_reason, str):
+            stop_reason = f"stop_sequence:{api_stop_reason}"
+        elif isinstance(api_stop_reason, int):
+            stop_text = (
+                self.tokenizer.decode([api_stop_reason])
+                if self.tokenizer is not None
+                else str(api_stop_reason)
+            )
+            stop_reason = f"stop_sequence:{stop_text}"
+        elif matched_stop is not None:
+            stop_reason = f"stop_sequence:{matched_stop}"
+        elif inferred_eos:
+            stop_reason = f"stop_sequence:{self.eos_string}"
+        elif finish_reason == "stop":
+            stop_reason = "natural"
+        else:
+            stop_reason = finish_reason
+        answer = postprocess_generated_text(
+            text,
+            stop=stop if self.think_end_token else None,
+            think_end_token=self.think_end_token,
+        )
+        return CompletionText(
+            answer,
+            not self.think_end_token or self.think_end_token in text,
+            stop_reason,
+            text,
+        )
+
     def parse_generations(
         self,
         outputs: dict | list[dict],
@@ -185,67 +243,21 @@ class LocalCompletionsAPI(TemplateAPI):
                     f"max_tokens={max_tokens} per choice."
                 )
             tmp = [None] * len(out["choices"])
-            for choices in out["choices"]:
-                text = choices["text"]
-                if text is not None:
-                    finish_reason = choices.get("finish_reason")
-                    api_stop_reason = choices.get("stop_reason")
-                    stop_sequences = [stop] if isinstance(stop, str) else (stop or [])
-                    matched_stop = next(
-                        (
-                            sequence
-                            for sequence in stop_sequences
-                            if sequence and text.endswith(sequence)
-                        ),
-                        None,
-                    )
-                    inferred_eos = (
-                        finish_reason == "stop"
-                        and api_stop_reason is None
-                        and matched_stop is None
-                        and self.eos_string is not None
-                    )
-                    if finish_reason == "length":
-                        stop_reason = "max_gen_toks"
-                    elif isinstance(api_stop_reason, str):
-                        stop_reason = f"stop_sequence:{api_stop_reason}"
-                    elif isinstance(api_stop_reason, int):
-                        stop_text = (
-                            self.tokenizer.decode([api_stop_reason])
-                            if self.tokenizer is not None
-                            else str(api_stop_reason)
-                        )
-                        stop_reason = f"stop_sequence:{stop_text}"
-                    elif matched_stop is not None:
-                        stop_reason = f"stop_sequence:{matched_stop}"
-                    elif inferred_eos:
-                        stop_reason = f"stop_sequence:{self.eos_string}"
-                    elif finish_reason == "stop":
-                        stop_reason = "natural"
-                    else:
-                        stop_reason = finish_reason
-                    print(
-                        "local-completions stop diagnostic:",
-                        f"finish_reason={finish_reason!r}",
-                        f"api_stop_reason={api_stop_reason!r}",
-                        f"task_until={stop_sequences!r}",
-                        f"matched_suffix={matched_stop!r}",
-                        f"inferred_eos={inferred_eos!r}",
-                        f"raw_suffix={text[-100:]!r}",
-                        f"chosen_stop_reason={stop_reason!r}",
-                        flush=True,
-                    )
-                    answer = postprocess_generated_text(
-                        text,
-                        stop=stop if self.think_end_token else None,
-                        think_end_token=self.think_end_token,
-                    )
-                    tmp[choices["index"]] = CompletionText(
-                        answer,
-                        not self.think_end_token or self.think_end_token in text,
-                        stop_reason,
-                        text,
-                    )
+            for choice in out["choices"]:
+                text = choice["text"]
+                if text is None:
+                    continue
+                completion_text = self._to_completion_text(text, choice, stop)
+                print(
+                    "local-completions stop diagnostic:",
+                    f"finish_reason={choice.get('finish_reason')!r}",
+                    f"api_stop_reason={choice.get('stop_reason')!r}",
+                    f"task_until={stop!r}",
+                    f"chosen_stop_reason={completion_text.stop_reason!r}",
+                    f"raw_suffix={text[-100:]!r}",
+                    flush=True,
+                )
+                tmp[choice["index"]] = completion_text
             res = res + tmp
         return res
 
@@ -332,23 +344,28 @@ class LocalChatCompletion(LocalCompletionsAPI):
             **gen_kwargs,
         }
 
-    def parse_generations(self, outputs: dict | list[dict], **kwargs) -> list[str]:
+    def parse_generations(
+        self,
+        outputs: dict | list[dict],
+        stop: str | list[str] | None = None,
+        max_tokens: int | None = None,
+        **kwargs,
+    ) -> list[str]:
         res = []
         if not isinstance(outputs, list):
             outputs = [outputs]
         for out in outputs:
             try:
                 tmp = [None] * len(out["choices"])
-                for choices in out["choices"]:
-                    content = choices["message"]["content"]
-                    tmp[choices["index"]] = (
-                        postprocess_generated_text(
-                            content,
-                            stop=None,
-                            think_end_token=self.think_end_token,
-                        )
-                        if content is not None
-                        else None
+                for choice in out["choices"]:
+                    content = choice["message"]["content"]
+                    if content is None:
+                        continue
+                    # Same metadata as the completions client, so the sample
+                    # logs carry identical fields; `full_resp` keeps the raw
+                    # generation, thinking trace included.
+                    tmp[choice["index"]] = self._to_completion_text(
+                        content, choice, stop
                     )
             except (IndexError, KeyError, TypeError) as e:
                 # account for cases that generation is blocked by content filter,
