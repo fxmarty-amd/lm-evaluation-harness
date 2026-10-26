@@ -1,11 +1,27 @@
 import re
+from collections import Counter
 from typing import Dict, List
 
 
-def process_results(doc: dict, results: List[str]) -> Dict[str, int]:
-    retval = 0
-    response = results[0]
+def _flatten(results: List) -> List[str]:
+    """Collect the per-sample texts, whatever nesting the harness uses.
 
+    Depending on the filter configuration `results` is either a flat list of
+    responses (one per repeat) or a list of per-request response lists.
+    """
+    texts = []
+    for item in results:
+        if isinstance(item, (list, tuple)):
+            texts.extend(_flatten(item))
+        elif isinstance(item, str):
+            texts.append(item)
+        else:
+            texts.append(str(item))
+    return texts
+
+
+def extract_answer(response: str) -> str:
+    """Pull the final answer out of a single response."""
     # Try to extract answer from $...$ format first
     indices = [pos for pos, char in enumerate(response) if char == "$"]
     if len(indices) <= 1:
@@ -22,14 +38,41 @@ def process_results(doc: dict, results: List[str]) -> Dict[str, int]:
                 answer = boxed_content
         except (AssertionError, IndexError):
             pass
+    return answer
 
-    # Check if answer matches target
+
+def _vote_key(answer: str) -> str:
+    try:
+        return strip_string(answer)
+    except Exception:  # noqa: BLE001 - malformed LaTeX should not kill the run
+        return answer.strip()
+
+
+def process_results(doc: dict, results: List[str]) -> Dict[str, float]:
+    """Score one doc.
+
+    `results` holds one entry per repeat (`--repeats K`), so:
+    - `exact_match` is the fraction of samples that are correct, i.e. avg@K; the
+      task's `aggregation: mean` over docs turns this into "share of samples
+      correct".
+    - `maj@k` is 1 when the majority vote over the K samples is correct
+      (answers are voted on after normalization, so equivalent forms of the same
+      value count as one vote).
+    """
+    answers = [extract_answer(response) for response in _flatten(results)]
     answer_key = next(k for k in doc.keys() if k.lower() == "answer")
     target = str(doc[answer_key])
-    if is_equiv(answer, target):
-        retval = 1
 
-    return {"exact_match": retval}
+    retval = {
+        "exact_match": sum(is_equiv(answer, target) for answer in answers)
+        / len(answers)
+    }
+
+    votes = Counter(_vote_key(answer) for answer in answers)
+    majority = votes.most_common(1)[0][0]
+    retval["maj@k"] = float(majority == _vote_key(target))
+
+    return retval
 
 
 # string normalization from https://github.com/EleutherAI/lm-evaluation-harness/blob/master/lm_eval/tasks/hendrycks_math.py

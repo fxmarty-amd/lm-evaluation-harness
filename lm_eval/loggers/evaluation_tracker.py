@@ -350,22 +350,23 @@ class EvaluationTracker:
                         # we first need to sanitize arguments and resps
                         # otherwise we won't be able to load the dataset
                         # using the datasets library
+                        sample_out = dict(sample)
                         arguments = {}
                         for i, arg in enumerate(sample["arguments"]):
                             arguments[f"gen_args_{i}"] = {}
                             for j, tmp in enumerate(arg):
                                 arguments[f"gen_args_{i}"][f"arg_{j}"] = tmp
 
-                        sample["resps"] = sanitize_list(sample["resps"])
-                        sample["filtered_resps"] = sanitize_list(
+                        sample_out["resps"] = sanitize_list(sample["resps"])
+                        sample_out["filtered_resps"] = sanitize_list(
                             sample["filtered_resps"]
                         )
-                        sample["arguments"] = arguments
-                        sample["target"] = str(sample["target"])
+                        sample_out["arguments"] = arguments
+                        sample_out["target"] = str(sample["target"])
 
                         sample_dump = (
                             json.dumps(
-                                sample,
+                                sample_out,
                                 default=handle_non_serializable,
                                 ensure_ascii=False,
                             )
