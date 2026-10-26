@@ -513,6 +513,42 @@ def _aggregate_diagnostic_stats(
             },
         }
     return result
+def make_generation_length_table(stats) -> str:
+    """Markdown table of generation length statistics, one row per task.
+
+    Tasks without generations (loglikelihood / multiple-choice) render as
+    "N/A", since there is nothing to measure.
+    """
+    headers = ["Tasks", "n", "p25", "mean", "median", "p75", "p90"]
+    rows = []
+    for task, entry in stats.items():
+        if not entry.get("count"):
+            rows.append([task, "N/A", "N/A", "N/A", "N/A", "N/A", "N/A"])
+            continue
+        rows.append(
+            [
+                task,
+                str(int(entry["count"])),
+                f"{entry['p25']:.2f}",
+                f"{entry['mean']:.2f}",
+                f"{entry['median']:.2f}",
+                f"{entry['p75']:.2f}",
+                f"{entry['p90']:.2f}",
+            ]
+        )
+    widths = [
+        max(len(headers[i]), *(len(row[i]) for row in rows))
+        for i in range(len(headers))
+    ]
+
+    def line(cells):
+        joined = "|".join(
+            cell.ljust(width) for cell, width in zip(cells, widths, strict=True)
+        )
+        return f"|{joined}|"
+
+    separator = "|" + "|".join("-" * width for width in widths) + "|"
+    return "\n".join([line(headers), separator, *(line(row) for row in rows)])
 
 
 def make_table(result_dict, column: str = "results", sort_results: bool = False):
