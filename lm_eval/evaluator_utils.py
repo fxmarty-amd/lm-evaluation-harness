@@ -246,6 +246,12 @@ def _compute_task_aggregations(
 
     if raw_metrics_by_repeat and len(raw_metrics_by_repeat) > 1:
         for metric, filter_key in raw_metrics:
+            # Metrics that already pool the repeat samples of a document (`maj@k`)
+            # have a per-repeat value equal to that sample's own correctness, so
+            # min/mean/median/max over repeats would merely duplicate the
+            # per-repeat accuracy statistics under another name.
+            if metric.startswith("maj@"):
+                continue
             key = (metric, filter_key)
             if not all(repeat.get(key) for repeat in raw_metrics_by_repeat):
                 if (
