@@ -31,6 +31,37 @@ def _save_diagnostic_samples(tracker, diagnostic_samples) -> None:
                     samples=invalid_samples,
                 )
 
+def _save_repeat_runs(tracker, results, repeat_results, repeat_samples) -> None:
+    """Write each repeat using the ordinary evaluation layout under its own root."""
+    if not tracker.output_path or not repeat_results:
+        return
+
+    from lm_eval.loggers import EvaluationTracker
+
+    output_path = Path(tracker.output_path)
+    repeat_root = output_path.parent if output_path.suffix == ".json" else output_path
+    for repeat_idx, repeat_result in enumerate(repeat_results):
+        task_samples = {
+            task_name: samples[repeat_idx]
+            for task_name, samples in repeat_samples.items()
+            if repeat_idx < len(samples)
+        }
+        repeat_tracker = EvaluationTracker(
+            output_path=str(repeat_root / f"{tracker.date_id}_repeat{repeat_idx}")
+        )
+        repeat_tracker.general_config_tracker = copy.deepcopy(
+            tracker.general_config_tracker
+        )
+        repeat_output = dict(results)
+        repeat_output.update(repeat_result)
+        if "groups" not in repeat_result:
+            repeat_output.pop("groups", None)
+        repeat_tracker.save_results_aggregated(
+            results=repeat_output, samples=task_samples or None
+        )
+        for task_name, samples in task_samples.items():
+            repeat_tracker.save_results_samples(task_name=task_name, samples=samples)
+
 
 class Run(SubCommand):
     """Command for running language model evaluation."""
@@ -185,12 +216,6 @@ class Run(SubCommand):
             default=None,
             metavar="<n>",
             help="Override the number of model responses per document for all tasks",
-        )
-        eval_group.add_argument(
-            "--report_repeat_stats",
-            action="store_true",
-            default=argparse.SUPPRESS,
-            help="Report min, mean, median, and max scores across individual repeats",
         )
 
         # Data and Output
@@ -470,7 +495,6 @@ class Run(SubCommand):
             fewshot_as_multiturn=cfg.fewshot_as_multiturn,
             gen_kwargs=cfg.gen_kwargs,
             repeats=cfg.repeats,
-            report_repeat_stats=cfg.report_repeat_stats,
             task_manager=task_manager,
             verbosity=cfg.verbosity,
             predict_only=cfg.predict_only,
@@ -487,6 +511,9 @@ class Run(SubCommand):
             if cfg.log_samples:
                 samples = results.pop("samples")
             diagnostic_samples = results.pop("diagnostic_samples", {})
+
+            repeat_results = results.pop("repeat_results", [])
+            repeat_samples = results.pop("repeat_samples", {})
 
             dumped = json.dumps(
                 results, indent=2, default=handle_non_serializable, ensure_ascii=False
@@ -528,6 +555,10 @@ class Run(SubCommand):
                     )
 
                 _save_diagnostic_samples(evaluation_tracker, diagnostic_samples)
+
+            _save_repeat_runs(
+                evaluation_tracker, results, repeat_results, repeat_samples
+            )
 
             if (
                 evaluation_tracker.push_results_to_hub

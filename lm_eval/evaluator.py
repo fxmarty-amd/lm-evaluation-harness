@@ -63,8 +63,7 @@ def _filter_responses_by_repeat(task: Task) -> dict[str, list[dict[int, Any]]]:
         # take_first_k with k > 1 needs a group of generations. Its ordinary
         # score still uses the full response list via task.apply_filters().
         if any(
-            getattr(filter_factory(), "k", 1) > 1
-            for filter_factory in ensemble.filters
+            getattr(filter_factory(), "k", 1) > 1 for filter_factory in ensemble.filters
         ):
             eval_logger.warning(
                 "[%s] Skipping repeat statistics for filter %s: it requires "
@@ -93,27 +92,6 @@ def _filter_responses_by_repeat(task: Task) -> dict[str, list[dict[int, Any]]]:
     return filtered_by_repeat
 
 
-def _answer_not_found(requests, repeat_idx: int | None = None) -> bool:
-    """Check all responses, or just one repeat, using the same missing-answer rule."""
-    for req in requests:
-        responses = req.resps if repeat_idx is None else [req.resps[repeat_idx]]
-        if req.request_type == "generate_until" and any(
-            response is None
-            or response == ""
-            or getattr(response, "answer_found", True) is False
-            for response in responses
-        ):
-            return True
-        found_answers = getattr(req, "found_answers", [])
-        if repeat_idx is None and any(not found for found in found_answers):
-            return True
-        if repeat_idx is not None and repeat_idx < len(found_answers):
-            if not found_answers[repeat_idx]:
-                return True
-    return False
-
-
-@positional_deprecated
 def simple_evaluate(
     model: str | LM,
     model_args: str | dict[str, str | int | float] | None = None,
@@ -147,7 +125,6 @@ def simple_evaluate(
     confirm_run_unsafe_code: bool = False,
     metadata: dict[str, Any] | None = None,
     repeats: int | None = None,
-    report_repeat_stats: bool = False,
 ) -> EvalResults | None:
     """Instantiate and evaluate a model on a list of tasks.
 
@@ -374,15 +351,6 @@ def simple_evaluate(
     for task_name, task_obj in loaded["tasks"].items():
         if repeats is not None:
             task_obj.set_config(key="repeats", value=repeats)
-        if report_repeat_stats:
-            task_obj.set_config(key="report_repeat_stats", value=True)
-            if task_obj.get_config("repeats") < 2:
-                eval_logger.warning(
-                    "[%s] Repeat statistics requested, but repeats is %s; "
-                    "use --repeats 2 or greater.",
-                    task_name,
-                    task_obj.get_config("repeats"),
-                )
         if task_obj.get_config("output_type") == "generate_until":
             if gen_kwargs is not None:
                 task_obj.set_config(
@@ -502,67 +470,7 @@ def simple_evaluate(
         return None
 
 
-# Stop reasons meaning "generation was cut by the token budget", in this
-# harness' vocabulary and in the OpenAI/vLLM one.
-_TRUNCATION_STOP_REASONS = {"max_gen_toks", "length"}
-
-
 @positional_deprecated
-def _require_api_backend(lm, feature: str) -> None:
-    """Fail clearly when a feature needs metadata only the API clients provide.
-
-    The diagnostics count missing answers from `answer_found` / `stop_reasons`,
-    which the OpenAI-compatible clients attach to every generation; the native
-    backends (hf, vLLM, SGLang) do not, so they would silently report zero.
-    """
-    from lm_eval.models.openai_completions import LocalCompletionsAPI
-
-    if not isinstance(lm, LocalCompletionsAPI):
-        raise NotImplementedError(
-            f"{feature} is only supported for OpenAI-compatible model backends "
-            "(local-completions, local-chat-completions, openai-*); "
-            f"{type(lm).__name__} does not report per-generation stop reasons"
-        )
-
-
-def _answer_not_found(requests) -> bool:
-    """Check whether any request for a document produced no answer.
-
-    A response is missing when it is empty or None, when the backend reports
-    that the answer was not found (a reasoning trace that never closed), or when
-    generation hit the token limit. The last case also covers models without a
-    reasoning trace: they simply ran out of budget before answering, or kept
-    generating past the answer because the stop condition was wrong.
-    """
-    for req in requests:
-        if req.request_type != "generate_until":
-            continue
-        if any(
-            response is None
-            or response == ""
-            or getattr(response, "answer_found", True) is False
-            for response in req.resps
-        ):
-            return True
-        found_answers = [
-            found
-            for group in getattr(req, "found_answers", None) or []
-            for found in (group if isinstance(group, list) else [group])
-        ]
-        if found_answers and not all(found_answers):
-            return True
-        for reasons in getattr(req, "stop_reasons", []) or []:
-            if reasons is None:
-                continue
-            group = reasons if isinstance(reasons, list) else [reasons]
-            if any(
-                str(reason).split(":")[0] in _TRUNCATION_STOP_REASONS
-                for reason in group
-            ):
-                return True
-    return False
-
-
 def evaluate(
     lm: LM,
     task_dict: TaskDict | _NestedDict,
@@ -647,11 +555,22 @@ def evaluate(
         }
         for task_name, task_obj in eval_tasks.items()
     }
+    # Reporting is implied by repeats > 1: there is nothing to report otherwise.
     repeat_reporting = any(
-        getattr(getattr(task, "_config", None), "report_repeat_stats", False)
-        and task.get_config("repeats") > 1
-        for task in eval_tasks.values()
+        task.get_config("repeats") > 1 for task in eval_tasks.values()
     )
+    if repeat_reporting:
+        # Per-repeat samples carry the generation metadata (stop reasons, full
+        # responses), which only the OpenAI-compatible clients log.
+        from lm_eval.models.openai_completions import LocalCompletionsAPI
+
+        if not isinstance(lm, LocalCompletionsAPI):
+            raise NotImplementedError(
+                "repeat reporting (repeats > 1) is only supported for "
+                "OpenAI-compatible model backends (local-completions, "
+                "local-chat-completions, openai-*); "
+                f"{type(lm).__name__} does not report per-generation metadata"
+            )
     if not log_samples and not all(
         "bypass" not in getattr(task_obj, "_metric_fn_list", {})
         for task_obj in eval_tasks.values()
@@ -781,22 +700,14 @@ def evaluate(
 
     RANK = lm.rank
     WORLD_SIZE = lm.world_size
-    if any(
-        getattr(acc["task"], "OUTPUT_TYPE", None) == "generate_until"
-        for acc in eval_results_acc.values()
-    ):
-        _require_api_backend(lm, "the answer-not-found / invalid-filter diagnostics")
     ### Postprocess outputs ###
     # TODO: del model here, maybe (idea: allow user to specify device of e.g. reward model separately)
-    diagnostic_stats: dict[str, dict[str, Any]] = {}
-    diagnostic_samples: dict[str, dict[str, Any]] = {}
+    repeat_diagnostic_stats: dict[str, list[dict[str, Any]]] = {}
     for (task_name, acc), limit in zip(eval_results_acc.items(), limits, strict=True):
         task = acc["task"]
         task.apply_filters()
         filtered_by_repeat = (
-            _filter_responses_by_repeat(task)
-            if getattr(getattr(task, "_config", None), "report_repeat_stats", False)
-            else {}
+            _filter_responses_by_repeat(task) if task.get_config("repeats") > 1 else {}
         )
         if filtered_by_repeat:
             acc["raw_metrics_by_repeat"] = [
@@ -809,33 +720,11 @@ def evaluate(
             repeat_diagnostic_stats[task_name] = [
                 {
                     "version": task.VERSION,
-                    "answer_not_found": 0,
                     "total": 0,
-                    "invalid_filter": {},
                     "filter_total": {},
                 }
                 for _ in acc["raw_metrics_by_repeat"]
             ]
-
-        stats: dict[str, Any] = {
-            "version": task.VERSION,
-            "answer_not_found": 0,
-            "total": 0,
-            "invalid_filter": {},
-            "filter_total": {},
-        }
-        not_found_samples: list[dict] = []
-        invalid_samples: dict[str, list[dict]] = defaultdict(list)
-
-        stats: dict[str, Any] = {
-            "version": task.VERSION,
-            "answer_not_found": 0,
-            "total": 0,
-            "invalid_filter": {},
-            "filter_total": {},
-        }
-        not_found_samples: list[dict] = []
-        invalid_samples: dict[str, list[dict]] = defaultdict(list)
 
         ### Collect values of metrics on all datapoints ###
         # # unpack results and sort back in order and return control to Task
@@ -849,8 +738,6 @@ def evaluate(
             instances.sort(key=lambda x: x.idx)
         # iterate over different filters used
         for filter_index, filter_key in enumerate(task.instances[0].filtered_resps):
-            stats["filter_total"][filter_key] = 0
-            stats["invalid_filter"][filter_key] = 0
             indices = samples.get(task_name, None) if samples is not None else None
             doc_iterator = task.doc_iterator(
                 rank=RANK,
@@ -864,16 +751,10 @@ def evaluate(
                 metrics = task.process_results(
                     doc, [req.filtered_resps[filter_key] for req in requests]
                 )
-                answer_not_found = _answer_not_found(requests)
                 if filter_index == 0:
-                    stats["total"] += 1
-                    stats["answer_not_found"] += answer_not_found
+                    for repeat_stats in repeat_diagnostic_stats.get(task_name, []):
+                        repeat_stats["total"] += 1
 
-                stats["filter_total"][filter_key] += 1
-                invalid_filter = not answer_not_found and any(
-                    req.filtered_resps[filter_key] == "[invalid]" for req in requests
-                )
-                stats["invalid_filter"][filter_key] += invalid_filter
                 if log_samples:
                     target = task.doc_to_target(doc)
                     example = {
@@ -912,34 +793,16 @@ def evaluate(
                         )
                     example.update(metrics)
                     acc["logged_samples"].append(example)
-                    if (filter_index == 0 and answer_not_found) or invalid_filter:
-                        diagnostic_example = {
-                            **example,
-                            "answer_not_found": answer_not_found,
-                            "invalid_filter": invalid_filter,
-                        }
-                        if filter_index == 0 and answer_not_found:
-                            not_found_samples.append(diagnostic_example)
-                        if invalid_filter:
-                            invalid_samples[filter_key].append(diagnostic_example)
                 for metric, value in metrics.items():
                     acc["raw_metrics"][(metric, filter_key)].append(value)
-                for repeat_idx, filtered in enumerate(filtered_by_repeat.get(filter_key, [])):
+                for repeat_idx, filtered in enumerate(
+                    filtered_by_repeat.get(filter_key, [])
+                ):
                     repeat_stats = repeat_diagnostic_stats[task_name][repeat_idx]
                     repeat_responses = [filtered[id(req)] for req in requests]
-                    repeat_answer_not_found = _answer_not_found(
-                        requests, repeat_idx
-                    )
                     repeat_stats["filter_total"][filter_key] = (
                         repeat_stats["filter_total"].get(filter_key, 0) + 1
                     )
-                    repeat_invalid = not repeat_answer_not_found and any(
-                        response == "[invalid]" for response in repeat_responses
-                    )
-                    if repeat_invalid:
-                        repeat_stats["invalid_filter"][filter_key] = (
-                            repeat_stats["invalid_filter"].get(filter_key, 0) + 1
-                        )
                     repeat_metrics = task.process_results(doc, repeat_responses)
                     # A single candidate cannot estimate pass@k for k > 1.
                     repeat_metrics = {
@@ -970,8 +833,6 @@ def evaluate(
                             resps=[[req.resps[repeat_idx]] for req in requests],
                             filtered_resps=repeat_responses,
                             metrics=list(repeat_metrics),
-                            answer_not_found=repeat_answer_not_found,
-                            invalid_filter=repeat_invalid,
                         )
                         for field in ("stop_reasons", "found_answers", "full_resps"):
                             if any(hasattr(req, field) for req in requests):
@@ -990,21 +851,6 @@ def evaluate(
                             (metric, filter_key)
                         ].append(value)
 
-        diagnostic_stats[task_name] = stats
-        if log_samples:
-            diagnostic_samples[task_name] = {
-                "not_found": not_found_samples,
-                "invalid": dict(invalid_samples),
-            }
-
-        if getattr(task, "OUTPUT_TYPE", None) == "generate_until":
-            diagnostic_stats[task_name] = stats
-            if log_samples:
-                diagnostic_samples[task_name] = {
-                    "not_found": not_found_samples,
-                    "invalid": dict(invalid_samples),
-                }
-
     if WORLD_SIZE > 1:
         # Gather all sample metrics across ranks, keyed by task name.
         if log_samples:
@@ -1022,32 +868,21 @@ def evaluate(
                         )
                     )
 
-        rank_diagnostics = {
-            "stats": diagnostic_stats,
-            "samples": diagnostic_samples,
-        }
-        all_diagnostics = lm.gather_object(rank_diagnostics, dst=0)
-        if RANK == 0:
-            for task_name in eval_results_acc:
-                stats = diagnostic_stats[task_name]
-                for rank_data in all_diagnostics[1:]:  # type: ignore[index]
-                    other = rank_data["stats"][task_name]
-                    stats["total"] += other["total"]
-                    stats["answer_not_found"] += other["answer_not_found"]
-                    for filter_key, count in other["filter_total"].items():
-                        stats["filter_total"][filter_key] += count
-                    for filter_key, count in other["invalid_filter"].items():
-                        stats["invalid_filter"][filter_key] += count
-                    if log_samples:
-                        diagnostic_samples[task_name]["not_found"].extend(
-                            rank_data["samples"][task_name]["not_found"]
-                        )
-                        for filter_key, examples in rank_data["samples"][task_name][
-                            "invalid"
-                        ].items():
-                            diagnostic_samples[task_name]["invalid"].setdefault(
-                                filter_key, []
-                            ).extend(examples)
+            if repeat_reporting:
+                rank_repeat_samples = {
+                    task_name: acc["logged_samples_by_repeat"]
+                    for task_name, acc in eval_results_acc.items()
+                }
+                all_repeat_samples = lm.gather_object(rank_repeat_samples, dst=0)
+                if RANK == 0:
+                    for task_name, acc in eval_results_acc.items():
+                        for repeat_idx in range(len(acc["logged_samples_by_repeat"])):
+                            acc["logged_samples_by_repeat"][repeat_idx] = list(
+                                itertools.chain.from_iterable(
+                                    rank_data[task_name][repeat_idx]
+                                    for rank_data in all_repeat_samples  # type: ignore
+                                )
+                            )
 
         rank_metrics = {
             task_name: dict(acc["raw_metrics"])
@@ -1081,45 +916,19 @@ def evaluate(
                                 )
                             )
 
-        rank_diagnostics = {
-            "stats": diagnostic_stats,
-            "samples": diagnostic_samples,
-            "repeat_stats": repeat_diagnostic_stats,
-        }
-        all_diagnostics = lm.gather_object(rank_diagnostics, dst=0)
+        all_repeat_stats = lm.gather_object(repeat_diagnostic_stats, dst=0)
         if RANK == 0:
             for task_name in eval_results_acc:
-                stats = diagnostic_stats[task_name]
-                for rank_data in all_diagnostics[1:]:  # type: ignore[index]
-                    other = rank_data["stats"][task_name]
-                    stats["total"] += other["total"]
-                    stats["answer_not_found"] += other["answer_not_found"]
-                    for filter_key, count in other["filter_total"].items():
-                        stats["filter_total"][filter_key] += count
-                    for filter_key, count in other["invalid_filter"].items():
-                        stats["invalid_filter"][filter_key] += count
-                    if log_samples:
-                        diagnostic_samples[task_name]["not_found"].extend(
-                            rank_data["samples"][task_name]["not_found"]
-                        )
-                        for filter_key, examples in rank_data["samples"][task_name][
-                            "invalid"
-                        ].items():
-                            diagnostic_samples[task_name]["invalid"].setdefault(
-                                filter_key, []
-                            ).extend(examples)
                 for repeat_idx, repeat_stats in enumerate(
                     repeat_diagnostic_stats.get(task_name, [])
                 ):
-                    for rank_data in all_diagnostics[1:]:  # type: ignore[index]
-                        other = rank_data["repeat_stats"][task_name][repeat_idx]
+                    for rank_data in all_repeat_stats[1:]:  # type: ignore[index]
+                        other = rank_data[task_name][repeat_idx]
                         repeat_stats["total"] += other["total"]
-                        repeat_stats["answer_not_found"] += other["answer_not_found"]
-                        for field in ("filter_total", "invalid_filter"):
-                            for filter_key, count in other[field].items():
-                                repeat_stats[field][filter_key] = (
-                                    repeat_stats[field].get(filter_key, 0) + count
-                                )
+                        for filter_key, count in other["filter_total"].items():
+                            repeat_stats["filter_total"][filter_key] = (
+                                repeat_stats["filter_total"].get(filter_key, 0) + count
+                            )
 
     if RANK == 0:
         res = _process_results(eval_results_acc, groups, bootstrap_iters)
@@ -1131,8 +940,46 @@ def evaluate(
                 samples = hash_dict_images(samples)
 
         eval_results = res._to_eval_results(samples=samples)
-        eval_results["diagnostic_stats"] = diagnostic_stats
-        eval_results["diagnostic_samples"] = diagnostic_samples
+        if repeat_diagnostic_stats:
+            repeat_results = []
+            for repeat_idx in range(
+                max(
+                    len(acc["raw_metrics_by_repeat"])
+                    for acc in eval_results_acc.values()
+                )
+            ):
+                repeat_acc = {
+                    task_name: {
+                        "task": acc["task"],
+                        "raw_metrics": acc["raw_metrics_by_repeat"][repeat_idx],
+                        "raw_metrics_by_repeat": [],
+                        "logged_samples": [],
+                        "logged_samples_by_repeat": [],
+                    }
+                    for task_name, acc in eval_results_acc.items()
+                    if repeat_idx < len(acc["raw_metrics_by_repeat"])
+                }
+                if not repeat_acc:
+                    continue
+                repeat_eval = _process_results(
+                    repeat_acc,
+                    groups
+                    if len(repeat_acc) == len(eval_results_acc)
+                    and all(acc["raw_metrics"] for acc in repeat_acc.values())
+                    else {},
+                    bootstrap_iters,
+                )._to_eval_results()
+                repeat_eval["repeat_index"] = repeat_idx + 1
+                repeat_results.append(repeat_eval)
+            eval_results["repeat_results"] = repeat_results
+        if log_samples:
+            repeat_samples = {
+                task_name: acc["logged_samples_by_repeat"]
+                for task_name, acc in eval_results_acc.items()
+                if acc["logged_samples_by_repeat"]
+            }
+            if repeat_samples:
+                eval_results["repeat_samples"] = repeat_samples
         return eval_results
     else:
         return None

@@ -82,9 +82,6 @@ class EvaluatorConfig:
     repeats: int | None = field(
         default=None, metadata={"help": "Override task response repeats"}
     )
-    report_repeat_stats: bool = field(
-        default=False, metadata={"help": "Report statistics across repeats"}
-    )
     batch_size: int = field(default=1, metadata={"help": "Batch size for evaluation"})
     max_batch_size: int | None = field(
         default=None, metadata={"help": "Maximum batch size for auto batching"}
