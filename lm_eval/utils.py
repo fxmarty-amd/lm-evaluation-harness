@@ -264,7 +264,7 @@ def pattern_match(patterns, source_list):
     for pattern in patterns:
         for matching in fnmatch.filter(source_list, pattern):
             task_names.add(matching)
-    return sorted(list(task_names))
+    return sorted(task_names)
 
 
 def softmax(x) -> np.ndarray:
@@ -493,14 +493,14 @@ def _aggregate_diagnostic_stats(
     for group_name in group_subtasks:
         if group_name in result:
             continue
-        group_stats = [task_stats[name] for name in leaves(group_name, set()) if name in task_stats]
+        group_stats = [
+            task_stats[name] for name in leaves(group_name, set()) if name in task_stats
+        ]
         if not group_stats:
             continue
         result[group_name] = {
             "total": sum(stats["total"] for stats in group_stats),
-            "answer_not_found": sum(
-                stats["answer_not_found"] for stats in group_stats
-            ),
+            "answer_not_found": sum(stats["answer_not_found"] for stats in group_stats),
             "filter_total": {
                 key: sum(stats["filter_total"].get(key, 0) for stats in group_stats)
                 for stats in group_stats
@@ -522,10 +522,10 @@ def make_table(result_dict, column: str = "results", sort_results: bool = False)
     column_name = "Groups" if column == "groups" else "Tasks"
     group_subtasks = result_dict.get("group_subtasks", {})
     raw_diagnostic_stats = result_dict.get("diagnostic_stats", {})
-    diagnostic_stats = _aggregate_diagnostic_stats(
-        raw_diagnostic_stats, group_subtasks
-    )
-    show_diagnostics = bool(raw_diagnostic_stats)
+    diagnostic_stats = _aggregate_diagnostic_stats(raw_diagnostic_stats, group_subtasks)
+    # The columns describe generative tasks; show them whenever there are results
+    # and render N/A for the tasks they do not apply to.
+    show_diagnostics = bool(result_dict.get(column))
 
     all_headers = [
         column_name,
@@ -562,7 +562,7 @@ def make_table(result_dict, column: str = "results", sort_results: bool = False)
         group_subtasks, set(result_dict[column].keys())
     )
 
-    if sort_results:  # noqa: SIM108
+    if sort_results:
         # sort entries alphabetically by task or group name.
         # NOTE: we default here to false, because order matters for multi-level table printing a la mmlu.
         # sorting here would mess that up
@@ -611,14 +611,17 @@ def make_table(result_dict, column: str = "results", sort_results: bool = False)
             if show_diagnostics:
                 total = task_diagnostics.get("total", 0)
                 filter_total = task_diagnostics.get("filter_total", {}).get(f, 0)
+                # A task that does not generate (`loglikelihood`, multiple-choice)
+                # produces no answers to be missing or unparsable.
+                applicable = bool(task_diagnostics)
                 row.extend(
                     [
                         f"{task_diagnostics['answer_not_found'] / total:.4f}"
-                        if total
-                        else "",
+                        if applicable and total
+                        else "N/A",
                         f"{task_diagnostics['invalid_filter'].get(f, 0) / filter_total:.4f}"
-                        if filter_total
-                        else "",
+                        if applicable and filter_total
+                        else "N/A",
                     ]
                 )
             values.append(row)
@@ -883,7 +886,7 @@ class RemoteTokenizer:
         resp = self._request_with_retries("POST", url, json=payload)
         tokens = resp.json().get("tokens")
         if not isinstance(tokens, list):
-            raise RuntimeError("Malformed response from /tokenize endpoint.")
+            raise TypeError("Malformed response from /tokenize endpoint.")
         return tokens
 
     def decode(self, tokens: list[int]) -> str:
@@ -892,7 +895,7 @@ class RemoteTokenizer:
         resp = self._request_with_retries("POST", url, json=payload)
         prompt = resp.json().get("prompt")
         if not isinstance(prompt, str):
-            raise RuntimeError("Malformed response from /detokenize endpoint.")
+            raise TypeError("Malformed response from /detokenize endpoint.")
         return prompt
 
     def batch_decode(self, tokens_list: list[list[int]]) -> list[str]:

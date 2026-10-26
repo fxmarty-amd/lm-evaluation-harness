@@ -2,15 +2,14 @@ import os
 import re
 import sys
 import types
+from typing import ClassVar
 
 import pytest
 
-import lm_eval.api as api
-import lm_eval.evaluator as evaluator
-from lm_eval import tasks
+from lm_eval import api, evaluator, tasks
 from lm_eval.api.instance import Instance
-from lm_eval.models.openai_completions import LocalCompletionsAPI
 from lm_eval.api.metrics import mean
+from lm_eval.models.openai_completions import LocalCompletionsAPI
 from lm_eval.utils import make_table
 
 
@@ -79,10 +78,7 @@ def test_evaluator(
             return x["results"]["mmlu_abstract_algebra"]
 
     assert all(
-        x == y
-        for x, y in zip(
-            [y for _, y in r(e1).items()], [y for _, y in r(e2).items()], strict=True
-        )
+        x == y for x, y in zip(list(r(e1).values()), list(r(e2).values()), strict=True)
     )
 
 
@@ -171,7 +167,7 @@ def test_printed_results(
 
 
 class _FakeMarkdownTableWriter:
-    instances = []
+    instances: ClassVar[list] = []
 
     def __init__(self):
         self.headers = []
@@ -278,8 +274,8 @@ def test_local_completions_diagnostic_table():
         task_name = "diagnostic"
         OUTPUT_TYPE = "generate_until"
         VERSION = 3
-        eval_docs = [{"answer": "42"} for _ in range(3)]
-        _metric_fn_list = {"exact_match": None}
+        eval_docs: ClassVar[list] = [{"answer": "42"} for _ in range(3)]
+        _metric_fn_list: ClassVar[dict] = {"exact_match": None}
 
         def __init__(self):
             self.instances = [
@@ -330,7 +326,8 @@ def test_local_completions_diagnostic_table():
 
         def generate_until(self, requests):
             parser = LocalCompletionsAPI.__new__(LocalCompletionsAPI)
-            parser.think_end_token = "</mm:think>"
+            think_end_marker = "</mm:think>"
+            parser.think_end_token = think_end_marker
             raw_texts = [
                 "<mm:think>work</mm:think>The answer is 42.",
                 "<mm:think>still working 42",
@@ -357,7 +354,9 @@ def test_local_completions_diagnostic_table():
         "flexible-extract": 0,
     }
     assert len(result["diagnostic_samples"]["diagnostic"]["not_found"]) == 1
-    assert len(result["diagnostic_samples"]["diagnostic"]["invalid"]["strict-match"]) == 1
+    assert (
+        len(result["diagnostic_samples"]["diagnostic"]["invalid"]["strict-match"]) == 1
+    )
 
     table = make_table(result)
     assert "answer-not-found|invalid-filter" in table
@@ -370,6 +369,7 @@ def test_local_completions_diagnostic_table():
         "strict-match": ["0.3333", "0.3333"],
         "flexible-extract": ["0.3333", "0.0000"],
     }
+
 
 def _fake_request(resps, stop_reasons=None, found_answers=None):
     req = types.SimpleNamespace(

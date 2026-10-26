@@ -172,7 +172,11 @@ class LocalCompletionsAPI(TemplateAPI):
         api_stop_reason = choice.get("stop_reason")
         stop_sequences = [stop] if isinstance(stop, str) else (stop or [])
         matched_stop = next(
-            (sequence for sequence in stop_sequences if sequence and text.endswith(sequence)),
+            (
+                sequence
+                for sequence in stop_sequences
+                if sequence and text.endswith(sequence)
+            ),
             None,
         )
         inferred_eos = (

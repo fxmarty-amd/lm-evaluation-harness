@@ -745,12 +745,13 @@ def evaluate(
                 for metric, value in metrics.items():
                     acc["raw_metrics"][(metric, filter_key)].append(value)
 
-        diagnostic_stats[task_name] = stats
-        if log_samples:
-            diagnostic_samples[task_name] = {
-                "not_found": not_found_samples,
-                "invalid": dict(invalid_samples),
-            }
+        if getattr(task, "OUTPUT_TYPE", None) == "generate_until":
+            diagnostic_stats[task_name] = stats
+            if log_samples:
+                diagnostic_samples[task_name] = {
+                    "not_found": not_found_samples,
+                    "invalid": dict(invalid_samples),
+                }
 
     if WORLD_SIZE > 1:
         # Gather all sample metrics across ranks, keyed by task name.
