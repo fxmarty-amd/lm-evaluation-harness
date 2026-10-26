@@ -425,19 +425,47 @@ def simple_evaluate(
         return None
 
 
+# Stop reasons meaning "generation was cut by the token budget", in this
+# harness' vocabulary and in the OpenAI/vLLM one.
+_TRUNCATION_STOP_REASONS = {"max_gen_toks", "length"}
+
+
 @positional_deprecated
 def _answer_not_found(requests) -> bool:
-    """Check whether any request for a document produced no answer."""
+    """Check whether any request for a document produced no answer.
+
+    A response is missing when it is empty or None, when the backend reports
+    that the answer was not found (a reasoning trace that never closed), or when
+    generation hit the token limit. The last case also covers models without a
+    reasoning trace: they simply ran out of budget before answering, or kept
+    generating past the answer because the stop condition was wrong.
+    """
     for req in requests:
-        if req.request_type == "generate_until" and any(
+        if req.request_type != "generate_until":
+            continue
+        if any(
             response is None
             or response == ""
             or getattr(response, "answer_found", True) is False
             for response in req.resps
         ):
             return True
-        if any(not found for found in getattr(req, "found_answers", [])):
+        found_answers = [
+            found
+            for group in getattr(req, "found_answers", None) or []
+            for found in (group if isinstance(group, list) else [group])
+        ]
+        if found_answers and not all(found_answers):
             return True
+        for reasons in getattr(req, "stop_reasons", []) or []:
+            if reasons is None:
+                continue
+            group = reasons if isinstance(reasons, list) else [reasons]
+            if any(
+                str(reason).split(":")[0] in _TRUNCATION_STOP_REASONS
+                for reason in group
+            ):
+                return True
     return False
 
 

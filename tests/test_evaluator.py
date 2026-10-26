@@ -370,3 +370,43 @@ def test_local_completions_diagnostic_table():
         "strict-match": ["0.3333", "0.3333"],
         "flexible-extract": ["0.3333", "0.0000"],
     }
+
+def _fake_request(resps, stop_reasons=None, found_answers=None):
+    req = types.SimpleNamespace(
+        request_type="generate_until",
+        resps=resps,
+        stop_reasons=stop_reasons,
+        found_answers=found_answers,
+    )
+    return req
+
+
+def test_answer_not_found_covers_a_truncated_generation_without_a_trace():
+    # a model without a reasoning trace that simply ran out of budget
+    truncated = _fake_request(["17 x 23 ="], stop_reasons=[["max_gen_toks"]])
+    assert evaluator._answer_not_found([truncated]) is True
+
+    # same, with the OpenAI/vLLM spelling of the same condition
+    truncated_openai = _fake_request(["17 x 23 ="], stop_reasons=[["length"]])
+    assert evaluator._answer_not_found([truncated_openai]) is True
+
+    # a clean stop, with and without a matched stop sequence
+    for reason in ("natural", "stop", "stop_sequence:[INST]"):
+        answered = _fake_request(["391"], stop_reasons=[[reason]])
+        assert evaluator._answer_not_found([answered]) is False, reason
+
+
+def test_answer_not_found_covers_empty_trace_and_empty_response():
+    empty_response = _fake_request([""], stop_reasons=[[["natural"]]])
+    assert evaluator._answer_not_found([empty_response]) is True
+
+    unclosed_trace = _fake_request(
+        ["[THINK]still thinking"], stop_reasons=[["natural"]], found_answers=[[False]]
+    )
+    assert evaluator._answer_not_found([unclosed_trace]) is True
+
+    # loglikelihood requests are not "answers" and are never counted
+    multiple_choice = types.SimpleNamespace(
+        request_type="loglikelihood", resps=[[(0.5, True)]], stop_reasons=None
+    )
+    assert evaluator._answer_not_found([multiple_choice]) is False
