@@ -43,6 +43,15 @@ None
 * `gpqa_{main, diamond, extended}_cot_zeroshot`
 * `gpqa_{main, diamond, extended}_cot_n_shot`
 
+### Version history
+
+`gpqa_diamond_generative_n_shot`:
+
+* `3.0` — the description now states the expected final answer format (`"The answer is (X)."`, where `X` is the correct letter choice) and the few-shot completions are rendered in that format through `fewshot_config.doc_to_target`, instead of being bare letters. The prompt changed, so scores are not comparable with earlier versions and result caches are invalidated.
+* `2.x` — previous prompt, in which the few-shot targets were bare letters and the description only asked to follow the format of the previous questions.
+
+The other GPQA variants are at `2.2` and are not affected by the `3.0` bump above.
+
 ### Checklist
 
 For adding novel benchmarks/datasets to the library:
