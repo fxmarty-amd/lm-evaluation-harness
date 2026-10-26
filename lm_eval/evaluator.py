@@ -126,7 +126,6 @@ def simple_evaluate(
     confirm_run_unsafe_code: bool = False,
     metadata: dict[str, Any] | None = None,
     repeats: int | None = None,
-    report_repeat_stats: bool = False,
 ) -> EvalResults | None:
     """Instantiate and evaluate a model on a list of tasks.
 
@@ -353,15 +352,6 @@ def simple_evaluate(
     for task_name, task_obj in loaded["tasks"].items():
         if repeats is not None:
             task_obj.set_config(key="repeats", value=repeats)
-        if report_repeat_stats:
-            task_obj.set_config(key="report_repeat_stats", value=True)
-            if task_obj.get_config("repeats") < 2:
-                eval_logger.warning(
-                    "[%s] Repeat statistics requested, but repeats is %s; "
-                    "use --repeats 2 or greater.",
-                    task_name,
-                    task_obj.get_config("repeats"),
-                )
         if task_obj.get_config("output_type") == "generate_until":
             if gen_kwargs is not None:
                 task_obj.set_config(
@@ -566,10 +556,9 @@ def evaluate(
         }
         for task_name, task_obj in eval_tasks.items()
     }
+    # Reporting is implied by repeats > 1: there is nothing to report otherwise.
     repeat_reporting = any(
-        getattr(getattr(task, "_config", None), "report_repeat_stats", False)
-        and task.get_config("repeats") > 1
-        for task in eval_tasks.values()
+        task.get_config("repeats") > 1 for task in eval_tasks.values()
     )
     if not log_samples and not all(
         "bypass" not in getattr(task_obj, "_metric_fn_list", {})
@@ -708,7 +697,7 @@ def evaluate(
         task.apply_filters()
         filtered_by_repeat = (
             _filter_responses_by_repeat(task)
-            if getattr(getattr(task, "_config", None), "report_repeat_stats", False)
+            if task.get_config("repeats") > 1
             else {}
         )
         if filtered_by_repeat:

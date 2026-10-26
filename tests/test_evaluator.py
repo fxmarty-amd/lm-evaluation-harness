@@ -279,13 +279,9 @@ def test_make_table_regression_sorted_results_is_alphabetical(fake_pytablewriter
 
 
 
-@pytest.mark.parametrize("report_repeat_stats", [False, True])
-def test_repeat_statistics_are_opt_in_and_preserve_existing_scores(
-    report_repeat_stats, caplog, monkeypatch, tmp_path
-):
-    monkeypatch.setenv(
-        "LMEVAL_LOG_LEVEL", "DEBUG" if report_repeat_stats else "INFO"
-    )
+@pytest.mark.parametrize("repeats", [1, 3])
+def test_repeat_statistics_are_implied_by_repeats(repeats, caplog, monkeypatch, tmp_path):
+    monkeypatch.setenv("LMEVAL_LOG_LEVEL", "DEBUG" if repeats > 1 else "INFO")
     class RepeatTask:
         task_name = "repeat_task"
         OUTPUT_TYPE = "generate_until"
@@ -294,14 +290,18 @@ def test_repeat_statistics_are_opt_in_and_preserve_existing_scores(
         _metric_fn_list = {"accuracy": None}
 
         def __init__(self):
-            self._config = types.SimpleNamespace(
-                report_repeat_stats=report_repeat_stats, repeats=3
-            )
-            self._filters = [
-                FilterEnsemble("first", [TakeFirstFilter]),
-                FilterEnsemble("majority", [MajorityVoteFilter, TakeFirstFilter]),
-                FilterEnsemble("first-two", [lambda: TakeKFilter(k=2), MajorityVoteFilter, TakeFirstFilter]),
-            ]
+            self._config = types.SimpleNamespace(repeats=repeats)
+            # the filters that need several responses per document only make
+            # sense when there is more than one repeat
+            self._filters = [FilterEnsemble("first", [TakeFirstFilter])]
+            if repeats > 1:
+                self._filters += [
+                    FilterEnsemble("majority", [MajorityVoteFilter, TakeFirstFilter]),
+                    FilterEnsemble(
+                        "first-two",
+                        [lambda: TakeKFilter(k=2), MajorityVoteFilter, TakeFirstFilter],
+                    ),
+                ]
             self.instances = [
                 Instance("generate_until", doc, ("prompt", {}), 0, (self.task_name, idx, 1))
                 for idx, doc in enumerate(self.eval_docs)
@@ -330,7 +330,7 @@ def test_repeat_statistics_are_opt_in_and_preserve_existing_scores(
             return {"accuracy": True}
 
         def dump_config(self):
-            return {"task": self.task_name, "report_repeat_stats": report_repeat_stats}
+            return {"task": self.task_name, "repeats": repeats}
 
         def get_config(self, key):
             return getattr(self._config, key, None)
@@ -340,20 +340,26 @@ def test_repeat_statistics_are_opt_in_and_preserve_existing_scores(
         world_size = 1
 
         def generate_until(self, requests):
-            return ["yes", "", "yes", "no", "no", "[invalid]"]
+            pattern = ["yes", "", "yes", "no", "no", "[invalid]"]
+            return [pattern[i % len(pattern)] for i in range(len(requests))]
 
     with caplog.at_level("WARNING"):
         result = evaluator.evaluate(
             lm=RepeatLM(),
             task_dict={"tasks": {"repeat_task": RepeatTask()}, "groups": {}},
-            bootstrap_iters=100 if report_repeat_stats else 0,
-            log_samples=report_repeat_stats,
+            bootstrap_iters=100 if repeats > 1 else 0,
+            log_samples=repeats > 1,
         )
     scores = result["results"]["repeat_task"]
-    assert scores["accuracy,first"] == 1.0
-    assert scores["accuracy,majority"] == 1.0
-    assert scores["accuracy,first-two"] == 1.0
-    if report_repeat_stats:
+    if repeats == 1:
+        # a single response per document: no repeat reporting at all
+        assert scores["accuracy,first"] == 0.5
+        assert "accuracy_mean_repeats,first" not in scores
+        assert "repeat_results" not in result
+    else:
+        assert scores["accuracy,first"] == 1.0
+        assert scores["accuracy,majority"] == 1.0
+        assert scores["accuracy,first-two"] == 1.0
         assert scores["accuracy_min_repeats,first"] == 0.5
         assert scores["accuracy_mean_repeats,first"] == pytest.approx(2 / 3)
         assert scores["accuracy_median_repeats,first"] == 0.5
@@ -409,6 +415,3 @@ def test_repeat_statistics_are_opt_in_and_preserve_existing_scores(
         assert len(second_repeat) == 4
         assert all(sample["resps"] == [[""]] for sample in second_repeat if sample["doc_id"] == 0)
         assert repeat_samples[1][0]["arguments"] == [("prompt", {})]
-    else:
-        assert "accuracy_mean_repeats,first" not in scores
-        assert "repeat_results" not in result

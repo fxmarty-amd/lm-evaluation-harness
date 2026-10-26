@@ -204,12 +204,6 @@ class Run(SubCommand):
             metavar="<n>",
             help="Override the number of model responses per document for all tasks",
         )
-        eval_group.add_argument(
-            "--report_repeat_stats",
-            action="store_true",
-            default=argparse.SUPPRESS,
-            help="Report min, mean, median, and max scores across individual repeats",
-        )
 
         # Data and Output
         data_group = self._parser.add_argument_group(
@@ -488,7 +482,6 @@ class Run(SubCommand):
             fewshot_as_multiturn=cfg.fewshot_as_multiturn,
             gen_kwargs=cfg.gen_kwargs,
             repeats=cfg.repeats,
-            report_repeat_stats=cfg.report_repeat_stats,
             task_manager=task_manager,
             verbosity=cfg.verbosity,
             predict_only=cfg.predict_only,
