@@ -70,3 +70,7 @@ If other tasks on this dataset are already supported:
   * trimmed whitespace from options: [see](https://x.com/fujikanaeda/status/2011565035408277996)
 * (tasks, group) 2026-05-04 -- (version 3 --> version 3.1)
   * fix fewshot answers being rendered in user turns instead of assistant turns under `--apply_chat_template`. PR #3693.
+
+The following tasks are the multi-turn chat variant (same subjects, fewshot as separate user/assistant turns when using `--apply_chat_template`):
+
+* `mmlu_pro_chat`: same as `mmlu_pro` but with the few-shot examples formatted for proper multi-turn chat (one user/assistant pair per example). Use it with `--apply_chat_template` and `--fewshot_as_multiturn` for chat models; it behaves as plain text when those flags are not used.
