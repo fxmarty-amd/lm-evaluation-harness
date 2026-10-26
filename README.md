@@ -13,6 +13,8 @@ a separate PR; this branch is the combination, kept so our evals can use all of 
 | `gsm8k_platinum` description (the 5-shot prompt carried no instruction) and version bump | https://github.com/EleutherAI/lm-evaluation-harness/pull/3411 |
 | `gpqa_diamond_generative_n_shot` prompt: expected final-answer format, few-shot answers rendered in that format, version bump | https://github.com/EleutherAI/lm-evaluation-harness/pull/3407 |
 | `aime26` task (AIME 2026, `math-ai/aime26`), without the task-pinned stop sequences and greedy settings so `--gen_kwargs` can override them | https://github.com/EleutherAI/lm-evaluation-harness/pull/3603 |
+| `gpqa_*` variants other than the generative one: `cot_zeroshot` / `cot_n_shot` prompts state the expected final-answer format, `until`/`max_gen_toks` set per task, `preprocess()` reduced to `text.strip()` in all five variants, versions bumped to `2.3` | fork-only, no upstream PR yet |
+| `gsm8k_platinum` and `aime26`: `until` cleared and `max_gen_toks` set, since the task-level stops are checkpoint-specific and belong to the caller | fork-only, no upstream PR yet |
 
 Two behaviours worth knowing:
 
