@@ -106,13 +106,6 @@ class LocalCompletionsAPI(TemplateAPI):
                 # Task stops may occur in the reasoning trace. Apply them to
                 # the answer after removing the trace instead.
                 stop = [sequence for sequence in stop if sequence == eos]
-            print(
-                "local-completions request stops:",
-                f"task_until={task_until!r}",
-                f"sent_stop={gen_kwargs.get('stop', stop)!r}",
-                f"think_end_token={self.think_end_token!r}",
-                flush=True,
-            )
             return {
                 "prompt": messages,
                 "model": self.model,
@@ -179,7 +172,11 @@ class LocalCompletionsAPI(TemplateAPI):
         api_stop_reason = choice.get("stop_reason")
         stop_sequences = [stop] if isinstance(stop, str) else (stop or [])
         matched_stop = next(
-            (sequence for sequence in stop_sequences if sequence and text.endswith(sequence)),
+            (
+                sequence
+                for sequence in stop_sequences
+                if sequence and text.endswith(sequence)
+            ),
             None,
         )
         inferred_eos = (
@@ -231,7 +228,6 @@ class LocalCompletionsAPI(TemplateAPI):
             outputs = [outputs]
         for out in outputs:
             completion_tokens = (out.get("usage") or {}).get("completion_tokens")
-            print("completion_tokens", completion_tokens, "max_tokens", max_tokens, flush=True)
             if max_tokens is not None and completion_tokens is not None:
                 # OpenAI-compatible completion usage counts all choices in the
                 # response; each choice has its own max_tokens limit.
@@ -248,15 +244,6 @@ class LocalCompletionsAPI(TemplateAPI):
                 if text is None:
                     continue
                 completion_text = self._to_completion_text(text, choice, stop)
-                print(
-                    "local-completions stop diagnostic:",
-                    f"finish_reason={choice.get('finish_reason')!r}",
-                    f"api_stop_reason={choice.get('stop_reason')!r}",
-                    f"task_until={stop!r}",
-                    f"chosen_stop_reason={completion_text.stop_reason!r}",
-                    f"raw_suffix={text[-100:]!r}",
-                    flush=True,
-                )
                 tmp[choice["index"]] = completion_text
             res = res + tmp
         return res
