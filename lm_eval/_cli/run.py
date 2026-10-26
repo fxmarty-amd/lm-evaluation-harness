@@ -49,7 +49,6 @@ def _save_repeat_runs(tracker, results, repeat_results, repeat_samples) -> None:
             repeat_tracker.save_results_samples(task_name=task_name, samples=samples)
 
 
-
 class Run(SubCommand):
     """Command for running language model evaluation."""
 
@@ -538,7 +537,6 @@ class Run(SubCommand):
                     evaluation_tracker.save_results_samples(
                         task_name=task_name, samples=samples[task_name]
                     )
-
 
             _save_repeat_runs(
                 evaluation_tracker, results, repeat_results, repeat_samples

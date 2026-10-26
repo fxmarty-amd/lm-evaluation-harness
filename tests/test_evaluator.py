@@ -6,13 +6,13 @@ import types
 
 import pytest
 
-import lm_eval.api as api
-import lm_eval.evaluator as evaluator
+import lm_eval.api as api  # noqa
+import lm_eval.evaluator as evaluator  # noqa
 from lm_eval import tasks
-from lm_eval.api.instance import Instance
-from lm_eval.api.filter import FilterEnsemble
-from lm_eval.api.metrics import mean
 from lm_eval._cli.run import _save_repeat_runs
+from lm_eval.api.filter import FilterEnsemble
+from lm_eval.api.instance import Instance
+from lm_eval.api.metrics import mean
 from lm_eval.filters.selection import MajorityVoteFilter, TakeFirstFilter, TakeKFilter
 from lm_eval.loggers import EvaluationTracker
 from lm_eval.models.openai_completions import LocalCompletionsAPI
@@ -86,7 +86,9 @@ def test_evaluator(
     assert all(
         x == y
         for x, y in zip(
-            [y for _, y in r(e1).items()], [y for _, y in r(e2).items()], strict=True
+            list(r(e1).values()),
+            list(r(e2).values()),
+            strict=True,
         )
     )
 
@@ -176,7 +178,7 @@ def test_printed_results(
 
 
 class _FakeMarkdownTableWriter:
-    instances = []
+    instances = []  # noqa
 
     def __init__(self):
         self.headers = []
@@ -278,16 +280,18 @@ def test_make_table_regression_sorted_results_is_alphabetical(fake_pytablewriter
     ]
 
 
-
 @pytest.mark.parametrize("repeats", [1, 3])
-def test_repeat_statistics_are_implied_by_repeats(repeats, caplog, monkeypatch, tmp_path):
+def test_repeat_statistics_are_implied_by_repeats(
+    repeats, caplog, monkeypatch, tmp_path
+):
     monkeypatch.setenv("LMEVAL_LOG_LEVEL", "DEBUG" if repeats > 1 else "INFO")
+
     class RepeatTask:
         task_name = "repeat_task"
         OUTPUT_TYPE = "generate_until"
         VERSION = 1
-        eval_docs = [{"answer": "yes"}, {"answer": "no"}]
-        _metric_fn_list = {"accuracy": None}
+        eval_docs = [{"answer": "yes"}, {"answer": "no"}]  # noqa
+        _metric_fn_list = {"accuracy": None}  # noqa
 
         def __init__(self):
             self._config = types.SimpleNamespace(repeats=repeats)
@@ -303,7 +307,9 @@ def test_repeat_statistics_are_implied_by_repeats(repeats, caplog, monkeypatch, 
                     ),
                 ]
             self.instances = [
-                Instance("generate_until", doc, ("prompt", {}), 0, (self.task_name, idx, 1))
+                Instance(
+                    "generate_until", doc, ("prompt", {}), 0, (self.task_name, idx, 1)
+                )
                 for idx, doc in enumerate(self.eval_docs)
             ]
 
@@ -335,9 +341,15 @@ def test_repeat_statistics_are_implied_by_repeats(repeats, caplog, monkeypatch, 
         def get_config(self, key):
             return getattr(self._config, key, None)
 
-    class RepeatLM:
+    class RepeatLM(LocalCompletionsAPI):
+        # repeat reporting requires an OpenAI-compatible client; skip
+        # TemplateAPI.__init__ so no endpoint is needed
         rank = 0
         world_size = 1
+
+        def __init__(self):
+            self.tokenizer = None
+            self.think_end_token = None
 
         def generate_until(self, requests):
             pattern = ["yes", "", "yes", "no", "no", "[invalid]"]
@@ -378,9 +390,21 @@ def test_repeat_statistics_are_implied_by_repeats(repeats, caplog, monkeypatch, 
         repeat_samples = result["repeat_samples"]["repeat_task"]
         assert len(repeat_samples) == 3
         assert len(repeat_samples[0]) == 4  # two docs, two compatible filters
-        assert all(sample["resps"] == [["yes"]] for sample in repeat_samples[0] if sample["doc_id"] == 0)
-        assert all(sample["resps"] == [[""]] for sample in repeat_samples[1] if sample["doc_id"] == 0)
-        assert all(sample["accuracy"] == 0.0 for sample in repeat_samples[1] if sample["doc_id"] == 0)
+        assert all(
+            sample["resps"] == [["yes"]]
+            for sample in repeat_samples[0]
+            if sample["doc_id"] == 0
+        )
+        assert all(
+            sample["resps"] == [[""]]
+            for sample in repeat_samples[1]
+            if sample["doc_id"] == 0
+        )
+        assert all(
+            sample["accuracy"] == 0.0
+            for sample in repeat_samples[1]
+            if sample["doc_id"] == 0
+        )
 
         tracker = EvaluationTracker(output_path=str(tmp_path))
         tracker.general_config_tracker.log_experiment_args(
@@ -399,7 +423,9 @@ def test_repeat_statistics_are_implied_by_repeats(repeats, caplog, monkeypatch, 
         tracker.save_results_samples(
             task_name="repeat_task", samples=result["samples"]["repeat_task"]
         )
-        _save_repeat_runs(tracker, base_result, repeat_results, result["repeat_samples"])
+        _save_repeat_runs(
+            tracker, base_result, repeat_results, result["repeat_samples"]
+        )
 
         repeat_dirs = sorted(tmp_path.glob("*_repeat*"))
         assert len(repeat_dirs) == 3
@@ -413,5 +439,25 @@ def test_repeat_statistics_are_implied_by_repeats(repeats, caplog, monkeypatch, 
         assert second_result["results"]["repeat_task"]["accuracy,first"] == 0.5
         second_repeat = [json.loads(line) for line in files[0].read_text().splitlines()]
         assert len(second_repeat) == 4
-        assert all(sample["resps"] == [[""]] for sample in second_repeat if sample["doc_id"] == 0)
+        assert all(
+            sample["resps"] == [[""]]
+            for sample in second_repeat
+            if sample["doc_id"] == 0
+        )
         assert repeat_samples[1][0]["arguments"] == [("prompt", {})]
+
+
+def test_repeat_reporting_requires_an_api_backend():
+    task = types.SimpleNamespace(
+        OUTPUT_TYPE="generate_until",
+        get_config=lambda key: 3 if key == "repeats" else None,
+    )
+    native_lm = types.SimpleNamespace(rank=0, world_size=1)
+    del native_lm  # only the type check matters
+    with pytest.raises(NotImplementedError, match="repeat reporting"):
+        evaluator.evaluate(
+            lm=object(),
+            task_dict={"tasks": {"repeat_task": task}, "groups": {}},
+            bootstrap_iters=0,
+            log_samples=False,
+        )
