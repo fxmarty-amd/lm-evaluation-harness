@@ -38,4 +38,5 @@ metric_list:
     ignore_case: true
     ignore_punctuation: true
 metadata:
-  version: 2.0
+  # prompt change (description + few-shot answer format): invalidate the cache
+  version: 3.0
