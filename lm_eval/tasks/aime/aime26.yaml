@@ -10,6 +10,13 @@ test_split: test
 doc_to_text: "Question: {{problem}}\nAnswer:"
 doc_to_target: "{{answer}}"
 process_results: !function utils.process_results
+# Keep every sample of a document so `exact_match` is avg@k and `maj@k` is a real
+# majority vote over the `--repeats` generations; the default `take_first` filter
+# would hand `process_results` only the first sample.
+filter_list:
+  - name: "identity"
+    filter:
+      - function: identity
 metric_list:
   - metric: exact_match
     aggregation: mean
