@@ -46,6 +46,7 @@ class LocalCompletionsAPI(TemplateAPI):
         ca_cert_path=None,
         auth_token=None,
         think_end_token: str | None = None,
+        server_sampling_defaults: bool | str = False,
         **kwargs,
     ):
         # Auto-detect tokenizer backend
@@ -83,6 +84,33 @@ class LocalCompletionsAPI(TemplateAPI):
             **kwargs,
         )
         self.think_end_token = think_end_token
+        # Opt-in: leave temperature and seed out of generation requests unless
+        # the task / --gen_kwargs sets them, so the server applies its (the
+        # model's) default sampling and each repeat is an independent sample.
+        # Otherwise requests are greedy (temperature 0) with a fixed seed.
+        self.server_sampling_defaults = str(server_sampling_defaults).lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if self.server_sampling_defaults:
+            eval_logger.info(
+                "server_sampling_defaults: requests omit temperature and seed "
+                "unless set by the task or gen_kwargs."
+            )
+
+    def _sampling_fields(self, gen_kwargs: dict, seed: int) -> dict:
+        """`temperature` / `seed` request fields: greedy with a fixed seed by
+        default; with `server_sampling_defaults`, only what the task or
+        gen_kwargs sets explicitly."""
+        if not getattr(self, "server_sampling_defaults", False):
+            return {"temperature": gen_kwargs.pop("temperature", 0), "seed": seed}
+        fields = {}
+        if "temperature" in gen_kwargs:
+            fields["temperature"] = gen_kwargs.pop("temperature")
+        if "seed" in gen_kwargs:
+            fields["seed"] = gen_kwargs.pop("seed")
+        return fields
 
     def _create_payload(
         self,
@@ -99,7 +127,7 @@ class LocalCompletionsAPI(TemplateAPI):
                 max_tokens = gen_kwargs.pop("max_tokens")
             else:
                 max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
-            temperature = gen_kwargs.pop("temperature", 0)
+            sampling = self._sampling_fields(gen_kwargs, seed)
             task_until = gen_kwargs.pop("until", None)
             stop = handle_stop_sequences(task_until, eos)
             if self.think_end_token:
@@ -110,9 +138,8 @@ class LocalCompletionsAPI(TemplateAPI):
                 "prompt": messages,
                 "model": self.model,
                 "max_tokens": max_tokens,
-                "temperature": temperature,
+                **sampling,
                 "stop": stop,
-                "seed": seed,
                 **gen_kwargs,
             }
         else:
@@ -216,6 +243,21 @@ class LocalCompletionsAPI(TemplateAPI):
             text,
         )
 
+    @staticmethod
+    def _log_finished(out: dict, completion_text: CompletionText) -> None:
+        """One line per finished sequence: its generation length (thinking
+        trace included), so long or capped traces are visible while the eval
+        runs instead of only in the final sample logs."""
+        usage = out.get("usage") or {}
+        eval_logger.info(
+            "Sequence finished: completion_tokens=%s prompt_tokens=%s "
+            "stop_reason=%s answer_found=%s",
+            usage.get("completion_tokens"),
+            usage.get("prompt_tokens"),
+            completion_text.stop_reason,
+            completion_text.answer_found,
+        )
+
     def parse_generations(
         self,
         outputs: dict | list[dict],
@@ -244,6 +286,7 @@ class LocalCompletionsAPI(TemplateAPI):
                 if text is None:
                     continue
                 completion_text = self._to_completion_text(text, choice, stop)
+                self._log_finished(out, completion_text)
                 tmp[choice["index"]] = completion_text
             res = res + tmp
         return res
@@ -317,7 +360,7 @@ class LocalChatCompletion(LocalCompletionsAPI):
             max_tokens = gen_kwargs.pop("max_tokens")
         else:
             max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
-        temperature = gen_kwargs.pop("temperature", 0)
+        sampling = self._sampling_fields(gen_kwargs, seed)
         stop = handle_stop_sequences(gen_kwargs.pop("until", None), eos)
         if not isinstance(stop, (list, tuple)):
             stop = [stop]
@@ -325,9 +368,8 @@ class LocalChatCompletion(LocalCompletionsAPI):
             "messages": messages,
             "model": self.model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
+            **sampling,
             "stop": stop[:4],
-            "seed": seed,
             **gen_kwargs,
         }
 
@@ -354,6 +396,7 @@ class LocalChatCompletion(LocalCompletionsAPI):
                     tmp[choice["index"]] = self._to_completion_text(
                         content, choice, stop
                     )
+                    self._log_finished(out, tmp[choice["index"]])
             except (IndexError, KeyError, TypeError) as e:
                 # account for cases that generation is blocked by content filter,
                 # which is common for Azure OpenAI Service,

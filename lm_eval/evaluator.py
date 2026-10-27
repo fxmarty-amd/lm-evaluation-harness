@@ -504,32 +504,36 @@ def _answer_not_found(requests) -> bool:
     reasoning trace: they simply ran out of budget before answering, or kept
     generating past the answer because the stop condition was wrong.
     """
-    for req in requests:
-        if req.request_type != "generate_until":
-            continue
+    return any(
+        _generation_not_found(req, idx)
+        for req in requests
+        if req.request_type == "generate_until"
+        for idx in range(len(req.resps))
+    )
+
+
+def _generation_not_found(req, idx: int) -> bool:
+    """Same check as `_answer_not_found`, for the `idx`-th generation (repeat) of `req`."""
+    response = req.resps[idx]
+    if (
+        response is None
+        or response == ""
+        or getattr(response, "answer_found", True) is False
+    ):
+        return True
+    found_answers = getattr(req, "found_answers", None) or []
+    if idx < len(found_answers) and found_answers[idx] is not None:
+        group = found_answers[idx]
+        if not all(group if isinstance(group, list) else [group]):
+            return True
+    stop_reasons = getattr(req, "stop_reasons", None) or []
+    if idx < len(stop_reasons) and stop_reasons[idx] is not None:
+        group = stop_reasons[idx]
         if any(
-            response is None
-            or response == ""
-            or getattr(response, "answer_found", True) is False
-            for response in req.resps
+            str(reason).split(":")[0] in _TRUNCATION_STOP_REASONS
+            for reason in (group if isinstance(group, list) else [group])
         ):
             return True
-        found_answers = [
-            found
-            for group in getattr(req, "found_answers", None) or []
-            for found in (group if isinstance(group, list) else [group])
-        ]
-        if found_answers and not all(found_answers):
-            return True
-        for reasons in getattr(req, "stop_reasons", []) or []:
-            if reasons is None:
-                continue
-            group = reasons if isinstance(reasons, list) else [reasons]
-            if any(
-                str(reason).split(":")[0] in _TRUNCATION_STOP_REASONS
-                for reason in group
-            ):
-                return True
     return False
 
 
@@ -922,7 +926,9 @@ def evaluate(
             repeat_diagnostic_stats[task_name] = [
                 {
                     "version": task.VERSION,
+                    "answer_not_found": 0,
                     "total": 0,
+                    "invalid_filter": {},
                     "filter_total": {},
                 }
                 for _ in acc["raw_metrics_by_repeat"]
@@ -966,19 +972,51 @@ def evaluate(
                 metrics = task.process_results(
                     doc, [req.filtered_resps[filter_key] for req in requests]
                 )
+                # Diagnostics are rates over generations (documents x repeats),
+                # the same population as the per-generation scores; a document-level
+                # "any repeat failed" rate is not comparable to them.
+                generations = [
+                    (req, idx)
+                    for req in requests
+                    if req.request_type == "generate_until"
+                    for idx in range(len(req.resps))
+                ]
+                not_found_flags = {
+                    (id(req), idx): _generation_not_found(req, idx)
+                    for req, idx in generations
+                }
+                answer_not_found = any(not_found_flags.values())
                 if filter_index == 0:
-                    for repeat_stats in repeat_diagnostic_stats.get(task_name, []):
+                    stats["total"] += len(generations)
+                    stats["answer_not_found"] += sum(not_found_flags.values())
+                    for repeat_idx, repeat_stats in enumerate(
+                        repeat_diagnostic_stats.get(task_name, [])
+                    ):
                         repeat_stats["total"] += 1
-                answer_not_found = _answer_not_found(requests)
-                if filter_index == 0:
-                    stats["total"] += 1
-                    stats["answer_not_found"] += answer_not_found
+                        repeat_stats["answer_not_found"] += any(
+                            not_found_flags.get((id(req), repeat_idx), False)
+                            for req in requests
+                        )
 
-                stats["filter_total"][filter_key] += 1
-                invalid_filter = not answer_not_found and any(
-                    req.filtered_resps[filter_key] == "[invalid]" for req in requests
-                )
-                stats["invalid_filter"][filter_key] += invalid_filter
+                repeat_filtered = filtered_by_repeat.get(filter_key)
+                if repeat_filtered:
+                    # Filter applied to each generation separately.
+                    invalid_count = sum(
+                        filtered[id(req)] == "[invalid]"
+                        and not not_found_flags.get((id(req), repeat_idx), False)
+                        for repeat_idx, filtered in enumerate(repeat_filtered)
+                        for req in requests
+                    )
+                    stats["filter_total"][filter_key] += len(generations)
+                    stats["invalid_filter"][filter_key] += invalid_count
+                    invalid_filter = invalid_count > 0
+                else:
+                    # Filter pools the repeats (e.g. majority vote): one output per document.
+                    invalid_filter = not answer_not_found and any(
+                        req.filtered_resps[filter_key] == "[invalid]" for req in requests
+                    )
+                    stats["filter_total"][filter_key] += 1
+                    stats["invalid_filter"][filter_key] += invalid_filter
                 if log_samples:
                     target = task.doc_to_target(doc)
                     example = {
@@ -1037,8 +1075,16 @@ def evaluate(
                     repeat_stats["filter_total"][filter_key] = (
                         repeat_stats["filter_total"].get(filter_key, 0) + 1
                     )
+                    repeat_stats["invalid_filter"][filter_key] = repeat_stats[
+                        "invalid_filter"
+                    ].get(filter_key, 0) + any(
+                        filtered[id(req)] == "[invalid]"
+                        and not not_found_flags.get((id(req), repeat_idx), False)
+                        for req in requests
+                    )
                     repeat_metrics = task.process_results(doc, repeat_responses)
-                    # A single candidate cannot estimate pass@k for k > 1.
+                    # A single candidate cannot estimate pass@k for k > 1, and a
+                    # majority vote over one candidate is just its correctness.
                     repeat_metrics = {
                         metric: value
                         for metric, value in repeat_metrics.items()
@@ -1047,6 +1093,7 @@ def evaluate(
                             and metric[5:].isdigit()
                             and int(metric[5:]) > 1
                         )
+                        and not metric.startswith("maj@")
                     }
                     if log_samples:
                         repeat_example = {
@@ -1193,10 +1240,12 @@ def evaluate(
                     for rank_data in all_repeat_stats[1:]:  # type: ignore[index]
                         other = rank_data[task_name][repeat_idx]
                         repeat_stats["total"] += other["total"]
-                        for filter_key, count in other["filter_total"].items():
-                            repeat_stats["filter_total"][filter_key] = (
-                                repeat_stats["filter_total"].get(filter_key, 0) + count
-                            )
+                        repeat_stats["answer_not_found"] += other["answer_not_found"]
+                        for field in ("filter_total", "invalid_filter"):
+                            for filter_key, count in other[field].items():
+                                repeat_stats[field][filter_key] = (
+                                    repeat_stats[field].get(filter_key, 0) + count
+                                )
 
     if RANK == 0:
         res = _process_results(eval_results_acc, groups, bootstrap_iters)
@@ -1242,6 +1291,12 @@ def evaluate(
                     bootstrap_iters,
                 )._to_eval_results()
                 repeat_eval["repeat_index"] = repeat_idx + 1
+                repeat_eval["diagnostic_stats"] = {
+                    task_name: repeat_diagnostic_stats[task_name][repeat_idx]
+                    for task_name in repeat_acc
+                    if task_name in diagnostic_stats
+                    and repeat_idx < len(repeat_diagnostic_stats.get(task_name, []))
+                }
                 repeat_results.append(repeat_eval)
             eval_results["repeat_results"] = repeat_results
         if log_samples:
