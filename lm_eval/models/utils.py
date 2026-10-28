@@ -950,7 +950,9 @@ def postprocess_generated_text(
         stop (list[str] | None): Stop sequence(s) to remove. Text is truncated
             at the first occurrence of any stop sequence.
         think_end_token (str | None): Token marking end of thinking section. If provided,
-            returns only the text after this token (discarding thinking content).
+            returns only the text after its last occurrence (discarding thinking content),
+            or an empty string if it never occurs: the reasoning trace never closed
+            (e.g. the generation hit the token limit), so there is no answer to score.
 
     Returns:
         str: The processed generation - text before stop sequences and after thinking sections.
@@ -958,6 +960,8 @@ def postprocess_generated_text(
     # Strip thinking content first so stop sequences apply to the response,
     # not to the reasoning trace (which often contains \n\n etc.)
     if think_end_token:
+        if think_end_token not in generation:
+            return ""
         generation = generation.split(think_end_token)[-1].lstrip()
     if stop:
         stop = [stop] if isinstance(stop, str) else stop
