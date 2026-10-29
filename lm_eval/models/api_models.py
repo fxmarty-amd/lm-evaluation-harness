@@ -616,36 +616,95 @@ class TemplateAPI(TemplateLM):
         async with ClientSession(
             connector=conn, timeout=ClientTimeout(total=self.timeout)
         ) as session:
-            retry_: Callable[..., Awaitable[Any]] = retry(
-                stop=stop_after_attempt(self.max_retries),
-                wait=wait_exponential(multiplier=0.5, min=1, max=10),
-                reraise=True,
-                before_sleep=lambda retry_state: eval_logger.info(
-                    f"Retry attempt {retry_state.attempt_number}"
-                ),
-            )(self.amodel_call)
-            # Create tasks for each batch of request
-            tasks = [
-                asyncio.create_task(
-                    retry_(
-                        session=session,
-                        sem=sem,
-                        messages=message,
-                        cache_keys=cache_key,
-                        generate=generate,
-                        ctxlens=ctxlen,
-                        **kwargs,
-                    )
-                )
-                for message, cache_key, ctxlen in zip(
-                    chunks(requests, n=self._batch_size),
-                    chunks(cache_keys, n=self._batch_size),
-                    chunks(ctxlens, n=self._batch_size),
-                    strict=False,
-                )
-            ]
-
+            tasks = self._create_request_tasks(
+                session,
+                sem,
+                requests,
+                cache_keys,
+                generate=generate,
+                ctxlens=ctxlens,
+                **kwargs,
+            )
             return await tqdm_asyncio.gather(*tasks, desc="Requesting API")
+
+    def _create_request_tasks(
+        self,
+        session: ClientSession,
+        sem: asyncio.Semaphore,
+        requests: list,
+        cache_keys: list,
+        *,
+        generate: bool = True,
+        ctxlens: list[int] | None = None,
+        **kwargs,
+    ) -> list[asyncio.Task]:
+        """Create one asyncio task per batch of requests, all sharing `sem`."""
+        ctxlens = ctxlens or [None] * len(requests)
+        retry_: Callable[..., Awaitable[Any]] = retry(
+            stop=stop_after_attempt(self.max_retries),
+            wait=wait_exponential(multiplier=0.5, min=1, max=10),
+            reraise=True,
+            before_sleep=lambda retry_state: eval_logger.info(
+                f"Retry attempt {retry_state.attempt_number}"
+            ),
+        )(self.amodel_call)
+        return [
+            asyncio.create_task(
+                retry_(
+                    session=session,
+                    sem=sem,
+                    messages=message,
+                    cache_keys=cache_key,
+                    generate=generate,
+                    ctxlens=ctxlen,
+                    **kwargs,
+                )
+            )
+            for message, cache_key, ctxlen in zip(
+                chunks(requests, n=self._batch_size),
+                chunks(cache_keys, n=self._batch_size),
+                chunks(ctxlens, n=self._batch_size),
+                strict=False,
+            )
+        ]
+
+    async def get_batched_generate_groups(
+        self, groups: list[tuple[list, list, dict]]
+    ) -> list[list[str]]:
+        """Run the generation requests of several gen_kwargs groups concurrently.
+
+        `groups` holds `(requests, cache_keys, gen_kwargs)` per group. All groups share one
+        session and one semaphore of `num_concurrent` slots, so a group starts filling the
+        slots freed by the previous one instead of waiting for its slowest request. Tasks
+        are created in group order and the semaphore wakes waiters in order, so requests
+        still start in the order of the groups. Returns the flat answers of each group, in
+        request order.
+        """
+        conn = TCPConnector(limit=self._concurrent, ssl=self.verify_certificate)
+        sem = asyncio.Semaphore(self._concurrent)
+        async with ClientSession(
+            connector=conn, timeout=ClientTimeout(total=self.timeout)
+        ) as session:
+            tasks_per_group = [
+                self._create_request_tasks(
+                    session,
+                    sem,
+                    requests,
+                    cache_keys,
+                    generate=True,
+                    gen_kwargs=copy.deepcopy(gen_kwargs),
+                )
+                for requests, cache_keys, gen_kwargs in groups
+            ]
+            flat = await tqdm_asyncio.gather(
+                *(t for tasks in tasks_per_group for t in tasks),
+                desc="Requesting API",
+            )
+        out, i = [], 0
+        for tasks in tasks_per_group:
+            out.append(list(itertools.chain.from_iterable(flat[i : i + len(tasks)])))
+            i += len(tasks)
+        return out
 
     def _loglikelihood_tokens(self, requests, **kwargs) -> list[tuple[float, bool]]:
         assert self.tokenizer is not None, (
@@ -830,6 +889,10 @@ class TemplateAPI(TemplateLM):
                         )
                     pbar.update(1)
         else:
+            # One request group per gen_kwargs; all groups run in a single event loop
+            # (see get_batched_generate_groups), so tasks with different gen_kwargs, e.g.
+            # per task max_gen_toks, overlap instead of running one after another.
+            groups = []
             for chunk in chunked:
                 contexts, all_gen_kwargs, encodings_list = zip(*chunk, strict=False)
                 if self.tokenized_requests:
@@ -848,17 +911,14 @@ class TemplateAPI(TemplateLM):
                         )
 
                 req = encodings_list if self.tokenized_requests else contexts
-                results = itertools.chain.from_iterable(
-                    asyncio.run(
-                        self.get_batched_requests(
-                            req,
-                            cache_keys=[(ctx, all_gen_kwargs[0]) for ctx in contexts],
-                            generate=True,
-                            gen_kwargs=copy.deepcopy(all_gen_kwargs[0]),
-                        )
+                groups.append(
+                    (
+                        list(req),
+                        [(ctx, all_gen_kwargs[0]) for ctx in contexts],
+                        all_gen_kwargs[0],
                     )
                 )
-                # Append results to res list
+            for results in asyncio.run(self.get_batched_generate_groups(groups)):
                 res.extend(results)
 
         return re_ord.get_original(res)
