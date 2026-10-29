@@ -317,10 +317,38 @@ class EvaluationTracker:
                 "Output path not provided, skipping saving results aggregated"
             )
 
+    def output_dir(self, subdir: str | None = None) -> Path:
+        """Local directory of the results and samples files, optionally a subdirectory."""
+        path = Path(self.output_path or Path.cwd())
+        if path.suffix == ".json":
+            path = path.parent
+        else:
+            path = path / str(self.general_config_tracker.model_name_sanitized)
+        return path / subdir if subdir else path
+
+    def save_results_subset(self, results: dict, subdir: str) -> Path | None:
+        """Write `results` as `<subdir>/results_<date_id>.json` (local only, no hub push).
+
+        Call after `save_results_aggregated`, which sets `date_id`.
+        """
+        if not self.output_path:
+            return None
+        path = self.output_dir(subdir)
+        path.mkdir(parents=True, exist_ok=True)
+        file_results = path / f"results_{self.date_id}.json"
+        file_results.write_text(
+            json.dumps(
+                results, indent=2, default=handle_non_serializable, ensure_ascii=False
+            ),
+            encoding="utf-8",
+        )
+        return file_results
+
     def save_results_samples(
         self,
         task_name: str,
         samples: dict,
+        subdir: str | None = None,
     ) -> None:
         """Saves the samples results to the output path.
 
@@ -329,16 +357,13 @@ class EvaluationTracker:
         Args:
             task_name (str): The task name to save the samples for.
             samples (dict): The samples results to save.
+            subdir (str | None): Subdirectory of the output directory to write into.
         """
         if self.output_path:
             try:
                 eval_logger.debug(f"Saving per-sample results for: {task_name}")
 
-                path = Path(self.output_path or Path.cwd())
-                if path.suffix == ".json":
-                    path = path.parent
-                else:
-                    path = path / str(self.general_config_tracker.model_name_sanitized)
+                path = self.output_dir(subdir)
                 path.mkdir(parents=True, exist_ok=True)
 
                 file_results_samples = (
@@ -407,7 +432,11 @@ class EvaluationTracker:
                     self.api.upload_folder(
                         repo_id=repo_id,
                         folder_path=str(path),
-                        path_in_repo=self.general_config_tracker.model_name_sanitized,
+                        path_in_repo=(
+                            f"{self.general_config_tracker.model_name_sanitized}/{subdir}"
+                            if subdir
+                            else self.general_config_tracker.model_name_sanitized
+                        ),
                         repo_type="dataset",
                         commit_message=f"Adding samples results for {task_name} to {self.general_config_tracker.model_name}",
                     )

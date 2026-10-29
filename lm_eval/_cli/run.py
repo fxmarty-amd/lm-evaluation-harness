@@ -1,11 +1,9 @@
 import argparse
-import copy
 import json
 import logging
 import os
 import textwrap
 from functools import partial
-from pathlib import Path
 
 from lm_eval._cli.subcommand import SubCommand
 from lm_eval._cli.utils import (
@@ -17,50 +15,116 @@ from lm_eval._cli.utils import (
 )
 
 
-def _save_diagnostic_samples(tracker, diagnostic_samples) -> None:
+def _task_units(results: dict) -> dict[str, list[str]]:
+    """Map each top-level task or group of the run to its own name plus all its subtasks.
+
+    Top-level entries are the groups that are not a subgroup of another group, and the
+    tasks that belong to no group, e.g. `{"mmlu_pro_chat": ["mmlu_pro_chat",
+    "mmlu_pro_chat_biology", ...], "aime26": ["aime26"]}`.
+    """
+    group_subtasks = results.get("group_subtasks", {})
+    children = {c for subtasks in group_subtasks.values() for c in subtasks}
+    tops = [g for g in group_subtasks if g not in children]
+    tops += [
+        t
+        for t in results.get("configs", {})
+        if t not in children and t not in group_subtasks
+    ]
+
+    def expand(name: str) -> list[str]:
+        out = [name]
+        for child in group_subtasks.get(name, []):
+            out += expand(child)
+        return out
+
+    return {top: expand(top) for top in tops}
+
+
+def _results_subset(results: dict, names: list[str], known: set[str]) -> dict:
+    """Copy of `results` whose task-keyed sections keep only `names`.
+
+    A section is task-keyed when it is a non-empty dict whose keys are all task or group
+    names (`results`, `configs`, `versions`, `n-samples`, `diagnostic_stats`, ...); every
+    other entry (`config`, `date`, ...) is kept as is.
+    """
+    keep = set(names)
+    out = {}
+    for key, value in results.items():
+        if isinstance(value, dict) and value and set(value) <= known:
+            out[key] = {k: v for k, v in value.items() if k in keep}
+        else:
+            out[key] = value
+    return out
+
+
+def _save_per_task(
+    tracker,
+    results: dict,
+    samples: dict | None,
+    diagnostic_samples: dict,
+    repeat_results: list[dict],
+    repeat_samples: dict,
+) -> None:
+    """Write results and samples in one subdirectory per top-level task or group.
+
+    Layout under the model directory (the combined `results_<date>.json` is written by
+    `save_results_aggregated`, which must run first):
+
+        <task_or_group>/results_<date>.json              that task and its subtasks only
+        <task_or_group>/samples_<task>_<date>.jsonl      one file per (sub)task
+        <task_or_group>/samples_not_found_<task>_<date>.jsonl, samples_invalid_...
+        <task_or_group>/repeat<k>/results_<date>.json, samples_<task>_<date>.jsonl
+    """
+    if not tracker.output_path:
+        return
+    units = _task_units(results)
+    unit_of = {name: unit for unit, names in units.items() for name in names}
+    known = set(unit_of)
+
+    for unit, names in units.items():
+        tracker.save_results_subset(_results_subset(results, names, known), unit)
+
+    for task_name, task_samples in (samples or {}).items():
+        tracker.save_results_samples(
+            task_name=task_name, samples=task_samples, subdir=unit_of[task_name]
+        )
+
     for task_name, task_samples in diagnostic_samples.items():
+        subdir = unit_of[task_name]
         if task_samples["not_found"]:
             tracker.save_results_samples(
                 task_name=f"not_found_{task_name}",
                 samples=task_samples["not_found"],
+                subdir=subdir,
             )
         for filter_key, invalid_samples in task_samples["invalid"].items():
             if invalid_samples:
                 tracker.save_results_samples(
                     task_name=f"invalid_{task_name}_{filter_key}",
                     samples=invalid_samples,
+                    subdir=subdir,
                 )
 
-def _save_repeat_runs(tracker, results, repeat_results, repeat_samples) -> None:
-    """Write each repeat using the ordinary evaluation layout under its own root."""
-    if not tracker.output_path or not repeat_results:
-        return
-
-    from lm_eval.loggers import EvaluationTracker
-
-    output_path = Path(tracker.output_path)
-    repeat_root = output_path.parent if output_path.suffix == ".json" else output_path
     for repeat_idx, repeat_result in enumerate(repeat_results):
-        task_samples = {
-            task_name: samples[repeat_idx]
-            for task_name, samples in repeat_samples.items()
-            if repeat_idx < len(samples)
-        }
-        repeat_tracker = EvaluationTracker(
-            output_path=str(repeat_root / f"{tracker.date_id}_repeat{repeat_idx}")
-        )
-        repeat_tracker.general_config_tracker = copy.deepcopy(
-            tracker.general_config_tracker
-        )
         repeat_output = dict(results)
         repeat_output.update(repeat_result)
         if "groups" not in repeat_result:
             repeat_output.pop("groups", None)
-        repeat_tracker.save_results_aggregated(
-            results=repeat_output, samples=task_samples or None
-        )
-        for task_name, samples in task_samples.items():
-            repeat_tracker.save_results_samples(task_name=task_name, samples=samples)
+        for unit, names in units.items():
+            # Tasks with fewer repeats than repeat_idx + 1 have no entry in this repeat.
+            if not any(n in repeat_result.get("results", {}) for n in names):
+                continue
+            subdir = f"{unit}/repeat{repeat_idx}"
+            tracker.save_results_subset(
+                _results_subset(repeat_output, names, known), subdir
+            )
+            for task_name, per_repeat in repeat_samples.items():
+                if unit_of[task_name] == unit and repeat_idx < len(per_repeat):
+                    tracker.save_results_samples(
+                        task_name=task_name,
+                        samples=per_repeat[repeat_idx],
+                        subdir=subdir,
+                    )
 
 
 class Run(SubCommand):
@@ -588,16 +652,13 @@ class Run(SubCommand):
                 results=results, samples=samples if cfg.log_samples else None
             )
 
-            if cfg.log_samples:
-                for task_name in results["configs"]:
-                    evaluation_tracker.save_results_samples(
-                        task_name=task_name, samples=samples[task_name]
-                    )
-
-                _save_diagnostic_samples(evaluation_tracker, diagnostic_samples)
-
-            _save_repeat_runs(
-                evaluation_tracker, results, repeat_results, repeat_samples
+            _save_per_task(
+                evaluation_tracker,
+                results,
+                {t: samples[t] for t in results["configs"]} if cfg.log_samples else None,
+                diagnostic_samples if cfg.log_samples else {},
+                repeat_results,
+                repeat_samples,
             )
 
             if (

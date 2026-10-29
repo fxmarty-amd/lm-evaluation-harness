@@ -8,7 +8,7 @@ from typing import ClassVar
 import pytest
 
 from lm_eval import api, evaluator, tasks
-from lm_eval._cli.run import _save_repeat_runs
+from lm_eval._cli.run import _save_per_task
 from lm_eval.api.filter import FilterEnsemble
 from lm_eval.api.instance import Instance
 from lm_eval.api.metrics import mean
@@ -609,17 +609,24 @@ def test_repeat_statistics_are_implied_by_repeats(
             if key not in ("samples", "repeat_results", "repeat_samples")
         }
         tracker.save_results_aggregated(results=base_result, samples=result["samples"])
-        tracker.save_results_samples(
-            task_name="repeat_task", samples=result["samples"]["repeat_task"]
-        )
-        _save_repeat_runs(
-            tracker, base_result, repeat_results, result["repeat_samples"]
+        _save_per_task(
+            tracker,
+            base_result,
+            result["samples"],
+            {},
+            repeat_results,
+            result["repeat_samples"],
         )
 
-        repeat_dirs = sorted(tmp_path.glob("*_repeat*"))
-        assert len(repeat_dirs) == 3
-        assert (tmp_path / "test_model").is_dir()  # combined run remains
-        second_model_dir = repeat_dirs[1] / "test_model"
+        model_dir = tmp_path / "test_model"
+        assert len(list(model_dir.glob("results_*.json"))) == 1  # combined run remains
+        assert not list(tmp_path.glob("*_repeat*"))
+        task_dir = model_dir / "repeat_task"
+        assert len(list(task_dir.glob("results_*.json"))) == 1
+        assert len(list(task_dir.glob("samples_repeat_task_*.jsonl"))) == 1
+        repeat_dirs = sorted(task_dir.glob("repeat*"))
+        assert [d.name for d in repeat_dirs] == ["repeat0", "repeat1", "repeat2"]
+        second_model_dir = repeat_dirs[1]
         result_files = list(second_model_dir.glob("results_*.json"))
         files = list(second_model_dir.glob("samples_repeat_task_*.jsonl"))
         assert len(result_files) == len(files) == 1
