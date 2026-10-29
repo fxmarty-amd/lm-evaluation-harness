@@ -238,6 +238,18 @@ class Run(SubCommand):
             metavar="<n>",
             help="Override the number of model responses per document for all tasks",
         )
+        eval_group.add_argument(
+            "--repeats_per_task",
+            default=None,
+            nargs="+",
+            action=MergeDictAction,
+            metavar="<task>=<n>",
+            help=textwrap.dedent(
+                "Per task or group repeats, e.g. `aime26=8 mmlu_pro_chat=1`. "
+                "A group name applies to all its subtasks; unlisted tasks keep their YAML "
+                "repeats. Mutually exclusive with --repeats."
+            ),
+        )
 
         # Data and Output
         data_group = self._parser.add_argument_group(
@@ -522,6 +534,7 @@ class Run(SubCommand):
             gen_kwargs=cfg.gen_kwargs,
             max_gen_toks_per_task=cfg.max_gen_toks_per_task,
             repeats=cfg.repeats,
+            repeats_per_task=cfg.repeats_per_task,
             task_manager=task_manager,
             verbosity=cfg.verbosity,
             predict_only=cfg.predict_only,

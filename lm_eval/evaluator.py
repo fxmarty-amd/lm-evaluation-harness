@@ -126,6 +126,7 @@ def simple_evaluate(
     confirm_run_unsafe_code: bool = False,
     metadata: dict[str, Any] | None = None,
     repeats: int | None = None,
+    repeats_per_task: dict[str, int] | None = None,
     generation_length: bool = False,
 ) -> EvalResults | None:
     """Instantiate and evaluate a model on a list of tasks.
@@ -347,27 +348,38 @@ def simple_evaluate(
     # Log selected tasks with hierarchy
     _log_selected_tasks(loaded["tasks"], loaded["groups"], task_manager)
 
-    # Per task / group max_gen_toks: resolve each key to its leaf tasks.
-    task_max_gen_toks: dict[str, int] = {}
-    for key, value in (max_gen_toks_per_task or {}).items():
-        if key in loaded["groups"]:
-            names = [t.task_name for t in loaded["groups"][key].get_all_tasks()]
-        elif key in loaded["tasks"]:
-            names = [key]
-        else:
-            raise ValueError(
-                f"max_gen_toks_per_task: {key!r} is not a loaded task or group "
-                f"(tasks: {sorted(loaded['tasks'])}, groups: {sorted(loaded['groups'])})"
-            )
-        for name in names:
-            task_max_gen_toks[name] = int(value)
+    def _per_task(option: str, values: dict[str, int] | None) -> dict[str, int]:
+        # Per task / group values: resolve each key to its leaf tasks.
+        out: dict[str, int] = {}
+        for key, value in (values or {}).items():
+            if key in loaded["groups"]:
+                names = [t.task_name for t in loaded["groups"][key].get_all_tasks()]
+            elif key in loaded["tasks"]:
+                names = [key]
+            else:
+                raise ValueError(
+                    f"{option}: {key!r} is not a loaded task or group "
+                    f"(tasks: {sorted(loaded['tasks'])}, groups: {sorted(loaded['groups'])})"
+                )
+            for name in names:
+                out[name] = int(value)
+        return out
+
+    task_max_gen_toks = _per_task("max_gen_toks_per_task", max_gen_toks_per_task)
+    task_repeats = _per_task("repeats_per_task", repeats_per_task)
 
     # Apply config overrides to tasks
+    if repeats is not None and repeats_per_task:
+        raise ValueError("repeats and repeats_per_task are mutually exclusive")
     if repeats is not None and repeats < 1:
         raise ValueError("repeats must be a positive integer")
+    if any(n < 1 for n in task_repeats.values()):
+        raise ValueError(f"repeats_per_task values must be positive integers: {task_repeats}")
     for task_name, task_obj in loaded["tasks"].items():
         if repeats is not None:
             task_obj.set_config(key="repeats", value=repeats)
+        elif task_name in task_repeats:
+            task_obj.set_config(key="repeats", value=task_repeats[task_name])
         if task_obj.get_config("output_type") == "generate_until":
             if gen_kwargs is not None:
                 task_obj.set_config(
@@ -480,6 +492,7 @@ def simple_evaluate(
                 "bootstrap_iters": bootstrap_iters,
                 "gen_kwargs": gen_kwargs,
                 "max_gen_toks_per_task": max_gen_toks_per_task,
+                "repeats_per_task": repeats_per_task,
                 "random_seed": random_seed,
                 "numpy_seed": numpy_random_seed,
                 "torch_seed": torch_random_seed,

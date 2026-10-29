@@ -26,6 +26,7 @@ DICT_KEYS = [
     "model_args",
     "gen_kwargs",
     "max_gen_toks_per_task",
+    "repeats_per_task",
     "trackio_args",
 ]
 # Seeds for random, numpy, torch and fewshot sampling, in that order.
@@ -82,6 +83,13 @@ class EvaluatorConfig:
     )
     repeats: int | None = field(
         default=None, metadata={"help": "Override task response repeats"}
+    )
+    repeats_per_task: dict = field(
+        default_factory=dict,
+        metadata={
+            "help": "Per task or group repeats, e.g. {'aime26': 8, 'mmlu_pro_chat': 1}. "
+            "Mutually exclusive with repeats"
+        },
     )
     batch_size: int = field(default=1, metadata={"help": "Batch size for evaluation"})
     max_batch_size: int | None = field(
@@ -362,6 +370,8 @@ class EvaluatorConfig:
             raise ValueError("Need to specify task to evaluate.")
         if self.repeats is not None and self.repeats < 1:
             raise ValueError("--repeats must be a positive integer")
+        if self.repeats is not None and self.repeats_per_task:
+            raise ValueError("--repeats and --repeats_per_task are mutually exclusive")
 
         if self.limit:
             eval_logger.warning(
