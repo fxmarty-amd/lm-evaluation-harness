@@ -115,6 +115,7 @@ def simple_evaluate(
     apply_chat_template: bool | str = False,
     fewshot_as_multiturn: bool = True,
     gen_kwargs: str | dict[str, str | float | int] | None = None,
+    max_gen_toks_per_task: dict[str, int] | None = None,
     task_manager: TaskManager | None = None,
     verbosity=None,
     predict_only: bool = False,
@@ -346,6 +347,21 @@ def simple_evaluate(
     # Log selected tasks with hierarchy
     _log_selected_tasks(loaded["tasks"], loaded["groups"], task_manager)
 
+    # Per task / group max_gen_toks: resolve each key to its leaf tasks.
+    task_max_gen_toks: dict[str, int] = {}
+    for key, value in (max_gen_toks_per_task or {}).items():
+        if key in loaded["groups"]:
+            names = [t.task_name for t in loaded["groups"][key].get_all_tasks()]
+        elif key in loaded["tasks"]:
+            names = [key]
+        else:
+            raise ValueError(
+                f"max_gen_toks_per_task: {key!r} is not a loaded task or group "
+                f"(tasks: {sorted(loaded['tasks'])}, groups: {sorted(loaded['groups'])})"
+            )
+        for name in names:
+            task_max_gen_toks[name] = int(value)
+
     # Apply config overrides to tasks
     if repeats is not None and repeats < 1:
         raise ValueError("repeats must be a positive integer")
@@ -356,6 +372,12 @@ def simple_evaluate(
             if gen_kwargs is not None:
                 task_obj.set_config(
                     key="generation_kwargs", value=gen_kwargs, update=True
+                )
+            if task_name in task_max_gen_toks:
+                task_obj.set_config(
+                    key="generation_kwargs",
+                    value={"max_gen_toks": task_max_gen_toks[task_name]},
+                    update=True,
                 )
             eval_logger.info(
                 f"{task_obj.config.task}: Using gen_kwargs: {task_obj.config.generation_kwargs}"
@@ -457,6 +479,7 @@ def simple_evaluate(
                 "limit": limit,
                 "bootstrap_iters": bootstrap_iters,
                 "gen_kwargs": gen_kwargs,
+                "max_gen_toks_per_task": max_gen_toks_per_task,
                 "random_seed": random_seed,
                 "numpy_seed": numpy_random_seed,
                 "torch_seed": torch_random_seed,

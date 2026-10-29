@@ -220,6 +220,18 @@ class Run(SubCommand):
             ),
         )
         eval_group.add_argument(
+            "--max_gen_toks_per_task",
+            default=None,
+            nargs="+",
+            action=MergeDictAction,
+            metavar="<task>=<n>",
+            help=textwrap.dedent(
+                "Per task or group max_gen_toks, e.g. `aime26=130000 mmlu_pro_chat=16384`. "
+                "A group name applies to all its subtasks. Overrides max_gen_toks from "
+                "--gen_kwargs and the task YAML for the matching tasks only."
+            ),
+        )
+        eval_group.add_argument(
             "--repeats",
             type=int,
             default=None,
@@ -508,6 +520,7 @@ class Run(SubCommand):
             apply_chat_template=cfg.apply_chat_template,
             fewshot_as_multiturn=cfg.fewshot_as_multiturn,
             gen_kwargs=cfg.gen_kwargs,
+            max_gen_toks_per_task=cfg.max_gen_toks_per_task,
             repeats=cfg.repeats,
             task_manager=task_manager,
             verbosity=cfg.verbosity,

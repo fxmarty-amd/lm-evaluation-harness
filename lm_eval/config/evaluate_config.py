@@ -25,6 +25,7 @@ DICT_KEYS = [
     "metadata",
     "model_args",
     "gen_kwargs",
+    "max_gen_toks_per_task",
     "trackio_args",
 ]
 # Seeds for random, numpy, torch and fewshot sampling, in that order.
@@ -177,6 +178,13 @@ class EvaluatorConfig:
     gen_kwargs: dict = field(
         default_factory=dict,
         metadata={"help": "Arguments for model generation. Will update Task defaults"},
+    )
+    max_gen_toks_per_task: dict = field(
+        default_factory=dict,
+        metadata={
+            "help": "Per task or group max_gen_toks, e.g. {'aime26': 130000, 'mmlu_pro_chat': 16384}. "
+            "Takes precedence over gen_kwargs and the task YAML for the matching tasks"
+        },
     )
 
     # Logging and verbosity
