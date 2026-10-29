@@ -600,9 +600,10 @@ def _iter_generations(sample: dict):
 
 
 def _generation_length_stats(
-    lm, eval_results_acc
+    lm, eval_results_acc, groups=None
 ) -> dict[str, dict[str, float | None]]:
-    """Token length statistics of the generated text, per task.
+    """Token length statistics of the generated text, per task, plus one row per
+    group pooling the generations of all its subtasks (listed first).
 
     Tasks that do not generate (`loglikelihood` / multiple-choice) get a row with
     `count: 0` so the table can render them as "N/A" instead of hiding them.
@@ -632,6 +633,7 @@ def _generation_length_stats(
         raise ValueError("--generation-length requires --log_samples")
 
     stats: dict[str, dict[str, float | None]] = {}
+    task_lengths: dict[str, list[int]] = {}
     for task_name, acc in eval_results_acc.items():
         empty = {
             "count": 0,
@@ -669,27 +671,46 @@ def _generation_length_stats(
         if not lengths:
             stats[task_name] = dict(empty)
             continue
-        ordered = sorted(lengths)
-        stats[task_name] = {
-            "count": len(lengths),
-            "mean": sum(lengths) / len(lengths),
-            "p25": _percentile(ordered, 25),
-            "median": _percentile(ordered, 50),
-            "p75": _percentile(ordered, 75),
-            "p90": _percentile(ordered, 90),
-        }
-        eval_logger.info(
-            "[%s] generation length: n=%d mean=%.2f p25=%.2f median=%.2f p75=%.2f "
-            "p90=%.2f tokens",
-            task_name,
-            stats[task_name]["count"],
-            stats[task_name]["mean"],
-            stats[task_name]["p25"],
-            stats[task_name]["median"],
-            stats[task_name]["p75"],
-            stats[task_name]["p90"],
-        )
-    return stats
+        task_lengths[task_name] = lengths
+        stats[task_name] = _length_summary(task_name, lengths)
+
+    # Group rows: pool the lengths of every generating subtask of the group.
+    group_stats: dict[str, dict[str, float | None]] = {}
+    for group_name, group in (groups or {}).items():
+        if not hasattr(group, "get_all_tasks"):
+            continue
+        pooled = [
+            n
+            for task in group.get_all_tasks()
+            for n in task_lengths.get(task.task_name, [])
+        ]
+        if pooled:
+            group_stats[str(group_name)] = _length_summary(str(group_name), pooled)
+    return {**group_stats, **stats}
+
+
+def _length_summary(name: str, lengths: list[int]) -> dict[str, float | None]:
+    ordered = sorted(lengths)
+    summary = {
+        "count": len(lengths),
+        "mean": sum(lengths) / len(lengths),
+        "p25": _percentile(ordered, 25),
+        "median": _percentile(ordered, 50),
+        "p75": _percentile(ordered, 75),
+        "p90": _percentile(ordered, 90),
+    }
+    eval_logger.info(
+        "[%s] generation length: n=%d mean=%.2f p25=%.2f median=%.2f p75=%.2f "
+        "p90=%.2f tokens",
+        name,
+        summary["count"],
+        summary["mean"],
+        summary["p25"],
+        summary["median"],
+        summary["p75"],
+        summary["p90"],
+    )
+    return summary
 
 
 def evaluate(
@@ -1282,7 +1303,7 @@ def evaluate(
         eval_results = res._to_eval_results(samples=samples)
         if generation_length:
             eval_results["generation_length_stats"] = _generation_length_stats(
-                lm, eval_results_acc
+                lm, eval_results_acc, groups
             )
         if repeat_diagnostic_stats:
             repeat_results = []
