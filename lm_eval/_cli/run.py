@@ -677,10 +677,7 @@ class Run(SubCommand):
             print(make_table(results))
             if "groups" in results:
                 print(make_table(results, "groups"))
-            if repeat_results and (
-                logging.getLogger("lm_eval").isEnabledFor(logging.DEBUG)
-                or os.environ.get("LMEVAL_LOG_LEVEL", "").upper() == "DEBUG"
-            ):
+            if repeat_results:
                 for repeat_idx, repeat_result in enumerate(repeat_results, start=1):
                     print(f"Repeat {repeat_idx}/{len(repeat_results)}")
                     print(make_table(repeat_result))
